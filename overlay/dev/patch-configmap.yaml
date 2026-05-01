@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: drawio-config
+data:
+  # Override only the templates.xml, keep drawio-config.json unchanged
+  templates.xml: |
+    <?xml version="1.0" encoding="UTF-8"?>
+    <templates>
+      <template
+        section="Dev Environment"
+        title="Development Stub"
+        url="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'/>"
+        preview=""
+        libs="general" />
+      <template
+        section="Dev Environment"
+        subsection="Testing"
+        title="Mock AWS"
+        url="https://raw.githubusercontent.com/jgraph/drawio-libs/master/libs/mock.xml"
+        preview=""
+        libs="general;mock" />
+    </templates>

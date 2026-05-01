@@ -1,0 +1,19 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: drawio
+  annotations:
+    # common annotations (can be overridden in overlays)
+    kubernetes.io/ingress.class: nginx
+spec:
+  rules:
+    - host: placeholder.example.com   # to be patched per overlay
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: drawio
+                port:
+                  number: 80

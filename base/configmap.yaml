@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: drawio-config
+data:
+  drawio-config.json: |
+    {
+      "templateFile": "/templates/templates.xml"
+    }
+  templates.xml: |
+    <?xml version="1.0" encoding="UTF-8"?>
+    <templates>
+      <template
+        section="Custom"
+        title="Blank Diagram"
+        url="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'/>"
+        preview=""
+        libs="general;basic" />
+      <template
+        section="Custom"
+        subsection="AWS"
+        title="Simple VPC"
+        url="https://raw.githubusercontent.com/jgraph/drawio-libs/master/libs/aws3.xml"
+        preview=""
+        libs="general;basic;aws3" />
+    </templates>

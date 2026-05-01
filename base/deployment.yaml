@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: drawio
+  labels:
+    app: drawio
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: drawio
+  template:
+    metadata:
+      labels:
+        app: drawio
+    spec:
+      containers:
+        - name: drawio
+          image: jgraph/drawio:latest
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: DRAWIO_CONFIG
+              value: /config/drawio-config.json
+            - name: DRAWIO_SELF_CONTAINED
+              value: "1" 
+              # offline mode, no external calls
+          volumeMounts:
+            - name: drawio-config-volume
+              mountPath: /config
+              readOnly: true
+            - name: drawio-templates-volume
+              mountPath: /templates
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+      volumes:
+        - name: drawio-config-volume
+          configMap:
+            name: drawio-config
+            items:
+              - key: drawio-config.json
+                path: drawio-config.json
+        - name: drawio-templates-volume
+          configMap:
+            name: drawio-config
+            items:
+              - key: templates.xml
+                path: templates.xml
