@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: drawio-realtime
+  labels:
+    app: drawio-realtime
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: drawio-realtime
+  template:
+    metadata:
+      labels:
+        app: drawio-realtime
+    spec:
+      containers:
+        - name: realtime-server
+          image: drawio-realtime:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8081
+              name: websocket
+          env:
+            - name: PORT
+              value: "8081"
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8081
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8081
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
