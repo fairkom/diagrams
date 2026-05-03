@@ -21,3 +21,20 @@ data:
         preview=""
         libs="general;mock" />
     </templates>
+  realtime-init.html: |
+    <!-- Real-time Collaboration Support for Local Deployment -->
+    <script>
+      (function() {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const host = window.location.hostname;
+        const realtimeServerUrl = protocol + '//' + host + (window.location.port ? ':' + window.location.port : '') + '/realtime';
+        
+        window.__drawioRealtimeConfig = {
+          enabled: true,
+          serverUrl: realtimeServerUrl,
+          collabEnabled: true
+        };
+        
+        console.log('[DrawIO-RT] Real-time server configured at:', realtimeServerUrl);
+      })();
+    </script>

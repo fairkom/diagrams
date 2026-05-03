@@ -7,11 +7,14 @@ resources:
   - service.yaml
   - ingress.yaml
   - configmap.yaml
+  - realtime-server-deployment.yaml
+  - realtime-server-service.yaml
 
 images:
   - name: jgraph/drawio
     newTag: latest
 
-commonLabels:
-  app: drawio
-  environment: base
+labels:
+  - pairs:
+      app: drawio
+      environment: base

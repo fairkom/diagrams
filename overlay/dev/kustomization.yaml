@@ -3,11 +3,23 @@ kind: Kustomization
 
 resources:
   - ../../base
+  - realtime-ingress.yaml
 
-patchesStrategicMerge:
-  - patch-ingress.yaml
+patches:
+  - target:
+      group: networking.k8s.io
+      version: v1
+      kind: Ingress
+      name: drawio
+    path: patch-ingress.yaml
+  - target:
+      version: v1
+      kind: ConfigMap
+      name: drawio-config
+    path: patch-configmap.yaml
 
-commonLabels:
-  environment: dev
+labels:
+  - pairs:
+      environment: dev
 
 namespace: drawio-dev

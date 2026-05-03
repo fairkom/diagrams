@@ -3,9 +3,10 @@ kind: Ingress
 metadata:
   name: drawio
   annotations:
-    # common annotations (can be overridden in overlays)
-    kubernetes.io/ingress.class: nginx
+    # Cert-manager annotation for automatic certificate issuance
+    cert-manager.io/issuer: letsencrypt-prod
 spec:
+  ingressClassName: nginx
   rules:
     - host: placeholder.example.com   # to be patched per overlay
       http:
