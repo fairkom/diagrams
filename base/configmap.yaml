@@ -5,7 +5,8 @@ metadata:
 data:
   drawio-config.json: |
     {
-      "templateFile": "/templates/templates.xml"
+      "templateFile": "/templates/templates.xml",
+      "realtimeUrl": "https://drawio-dev.fairkom.net/cache"
     }
   templates.xml: |
     <?xml version="1.0" encoding="UTF-8"?>

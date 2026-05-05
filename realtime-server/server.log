@@ -1,0 +1,2 @@
+[2026-05-04T18:09:41.854Z] Real-time server listening on port 8081
+WebSocket endpoint: ws://0.0.0.0:8081/rt?id=<room-id>

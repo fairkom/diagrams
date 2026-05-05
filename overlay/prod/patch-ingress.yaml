@@ -1,0 +1,30 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: drawio
+  annotations:
+    # Cert-manager annotation for automatic certificate issuance
+    cert-manager.io/issuer: letsencrypt-prod
+    # WebSocket support
+    nginx.ingress.kubernetes.io/websocket-services: drawio
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    # SSL redirect
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: drawio.example.com  # Change to your production domain
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: drawio
+                port:
+                  number: 80
+  tls:
+    - hosts:
+        - drawio.example.com  # Change to your production domain
+      secretName: drawio-tls

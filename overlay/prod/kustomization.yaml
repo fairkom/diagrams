@@ -1,0 +1,32 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+  - realtime-ingress.yaml
+
+patches:
+  - target:
+      group: networking.k8s.io
+      version: v1
+      kind: Ingress
+      name: drawio
+    path: patch-ingress.yaml
+  - target:
+      version: v1
+      kind: ConfigMap
+      name: drawio-config
+    path: patch-configmap.yaml
+
+images:
+  # Update these with your registry details
+  # Example: docker.io/youruser/drawio-realtime:v1.0
+  - name: drawio-realtime
+    newName: docker.io/youruser/drawio-realtime
+    newTag: latest
+
+labels:
+  - pairs:
+      environment: production
+
+namespace: drawio-prod

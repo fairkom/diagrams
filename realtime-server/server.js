@@ -1,209 +1,353 @@
-const WebSocket = require('ws');
-const http = require('http');
-const Y = require('yjs');
-const syncProtocol = require('y-protocols/sync.js');
-const awarenessProtocol = require('y-protocols/awareness.js');
-const encoding = require('lib0/encoding');
-const decoding = require('lib0/decoding');
-const map = require('lib0/map');
+import { WebSocketServer } from 'ws';
+import http from 'http';
+import url from 'url';
 
 const PORT = process.env.PORT || 8081;
-const ROOMS_CLEANUP_INTERVAL = 5 * 60 * 1000; // 5 minutes
 
-// Map to store active documents and rooms
-const docs = new Map();
-const awareness = new Map();
-const docStates = new Map();
+// Store rooms and their connected WebSocket clients
+const rooms = new Map();
 
 class Room {
-  constructor(name) {
-    this.name = name;
-    this.doc = new Y.Doc();
-    this.awareness = new awarenessProtocol.Awareness(this.doc);
-    this.conns = new Set();
+  constructor(id) {
+    this.id = id;
+    this.clients = new Set();
+    this.updates = []; // Track update history with version IDs
+    this.updateCount = 0; // Sequential counter for update versions
     this.createdAt = Date.now();
+  }
+
+  addUpdate(msg, sid) {
+    this.updateCount++;
+    const update = {
+      id: this.updateCount,
+      msg: msg,
+      sid: sid,
+      timestamp: Date.now()
+    };
+    this.updates.push(update);
     
-    this.setupAwareness();
-    this.setupDocUpdateListener();
+    // Keep only last 100 updates to avoid memory leak
+    if (this.updates.length > 100) {
+      this.updates.shift();
+    }
+    
+    console.log(`[${new Date().toISOString()}] [UPDATE] Room ${this.id} update #${this.updateCount} added (${msg.length} bytes)`);
+    return update;
   }
 
-  setupAwareness() {
-    this.awareness.on('change', changes => {
-      const encoder = encoding.createEncoder();
-      encoding.writeVarUint(encoder, 1); // Awareness update message type
-      encoding.writeVarUint8Array(encoder, awarenessProtocol.encodeAwarenessUpdate(this.awareness, Array.from(changes)));
-      
-      const message = encoding.toUint8Array(encoder);
-      this.broadcastMessage(message, null);
-    });
+  getUpdatesSince(lastSeenId) {
+    if (lastSeenId === undefined || lastSeenId === null) {
+      // Return only the latest update if no lastSeenId
+      return this.updates.length > 0 ? [this.updates[this.updates.length - 1]] : [];
+    }
+    
+    // Return all updates after lastSeenId
+    const newUpdates = this.updates.filter(u => u.id > lastSeenId);
+    console.log(`[${new Date().toISOString()}] [POLL] Client polling lastSeenId=${lastSeenId}, returning ${newUpdates.length} new updates`);
+    return newUpdates;
   }
 
-  setupDocUpdateListener() {
-    this.doc.on('update', (update, origin) => {
-      if (origin !== 'local') return;
-      
-      const encoder = encoding.createEncoder();
-      encoding.writeVarUint(encoder, 0); // Document update message type
-      encoding.writeVarUint8Array(encoder, update);
-      
-      const message = encoding.toUint8Array(encoder);
-      this.broadcastMessage(message, null);
-    });
+  addClient(ws) {
+    this.clients.add(ws);
+    console.log(`[${new Date().toISOString()}] Client added to room ${this.id}, total clients: ${this.clients.size}`);
   }
 
-  addConnection(conn) {
-    this.conns.add(conn);
+  removeClient(ws) {
+    this.clients.delete(ws);
+    console.log(`[${new Date().toISOString()}] Client removed from room ${this.id}, total clients: ${this.clients.size}`);
   }
 
-  removeConnection(conn) {
-    this.conns.delete(conn);
-  }
-
-  broadcastMessage(message, exclude) {
-    for (const conn of this.conns) {
-      if (conn !== exclude && conn.readyState === WebSocket.OPEN) {
-        conn.send(message);
+  broadcast(message, excludeWs = null) {
+    const msgStr = typeof message === 'string' ? message : JSON.stringify(message);
+    let count = 0;
+    for (const client of this.clients) {
+      if (client !== excludeWs && client.readyState === 1) { // OPEN
+        try {
+          client.send(msgStr);
+          count++;
+        } catch (error) {
+          console.error(`[${new Date().toISOString()}] Error broadcasting:`, error.message);
+        }
       }
     }
-  }
-
-  isEmpty() {
-    return this.conns.size === 0;
-  }
-
-  cleanup() {
-    this.awareness.destroy();
-    this.doc.destroy();
+    if (count > 0) {
+      console.log(`[${new Date().toISOString()}] Broadcast to ${count} clients in room ${this.id}`);
+    }
   }
 }
 
-// Get or create a room
-function getRoom(name) {
-  if (!docs.has(name)) {
-    docs.set(name, new Room(name));
+function getOrCreateRoom(roomId) {
+  if (!rooms.has(roomId)) {
+    rooms.set(roomId, new Room(roomId));
+    console.log(`[${new Date().toISOString()}] Created room: ${roomId}`);
   }
-  return docs.get(name);
+  return rooms.get(roomId);
 }
 
-// Handle WebSocket connection
-function handleConnection(ws, req) {
-  const url = req.url;
-  const match = url.match(/\/rt\?id=([^&]+)/);
+// WebSocket connection handler
+function handleWebSocket(ws, req) {
+  const queryUrl = url.parse(req.url, true);
+  const roomId = queryUrl.query.id;
   
-  if (!match) {
-    ws.close(1008, 'Invalid room ID');
+  console.log(`[${new Date().toISOString()}] [WS-CONNECT] URL: ${req.url}`);
+  console.log(`[${new Date().toISOString()}] [WS-CONNECT] User-Agent: ${req.headers['user-agent']}`);
+  console.log(`[${new Date().toISOString()}] [WS-CONNECT] Origin: ${req.headers.origin}`);
+
+  if (!roomId) {
+    console.warn(`[${new Date().toISOString()}] WebSocket connection without room ID`);
+    ws.close(1008, 'Missing room ID');
     return;
   }
 
-  const roomId = match[1];
-  const room = getRoom(roomId);
-  
-  console.log(`[${new Date().toISOString()}] Client connected to room: ${roomId}`);
-  room.addConnection(ws);
+  const room = getOrCreateRoom(roomId);
+  room.addClient(ws);
+  console.log(`[${new Date().toISOString()}] [WS-CONNECT] Successfully added client to room ${roomId}`);
 
-  // Send initial state to client
-  const encoder = encoding.createEncoder();
-  encoding.writeVarUint(encoder, 0); // Document update
-  const update = Y.encodeStateAsUpdate(room.doc);
-  encoding.writeVarUint8Array(encoder, update);
-  ws.send(encoding.toUint8Array(encoder));
+  // Send last update to newly connected client with all metadata
+  if (room.updates.length > 0) {
+    try {
+      const lastUpdate = room.updates[room.updates.length - 1];
+      const wsMessage = JSON.stringify({
+        id: roomId,
+        msg: lastUpdate.msg,
+        sid: lastUpdate.sid,
+        timestamp: lastUpdate.timestamp
+      });
+      ws.send(wsMessage);
+      console.log(`[${new Date().toISOString()}] [WS-SEND] Sent cached update #${lastUpdate.id} with metadata to new client in room ${roomId}`);
+    } catch (error) {
+      console.error(`[${new Date().toISOString()}] [WS-ERROR] Error sending cached update:`, error.message);
+    }
+  }
 
-  // Send awareness states
-  const awarenessEncoder = encoding.createEncoder();
-  encoding.writeVarUint(awarenessEncoder, 1); // Awareness update
-  encoding.writeVarUint8Array(
-    awarenessEncoder,
-    awarenessProtocol.encodeAwarenessUpdate(room.awareness, Array.from(room.awareness.getStates().keys()))
-  );
-  ws.send(encoding.toUint8Array(awarenessEncoder));
-
-  // Handle incoming messages
+  // Handle incoming WebSocket messages
   ws.on('message', (data) => {
     try {
-      const decoder = decoding.createDecoder(new Uint8Array(data));
-      const messageType = decoding.readVarUint(decoder);
-
-      if (messageType === 0) {
-        // Document update
-        const update = decoding.readVarUint8Array(decoder);
-        Y.applyUpdate(room.doc, update, 'remote');
-      } else if (messageType === 1) {
-        // Awareness update
-        const awarenessUpdate = decoding.readVarUint8Array(decoder);
-        awarenessProtocol.applyAwarenessUpdate(room.awareness, awarenessUpdate, 'remote');
-      }
+      console.log(`[${new Date().toISOString()}] [WS-MSG-IN] Received message from client in room ${roomId} (${data.length} bytes)`);
+      
+      // Broadcast to other clients
+      room.broadcast(data, ws);
     } catch (error) {
-      console.error(`[${new Date().toISOString()}] Error processing message:`, error);
-      ws.close(1011, 'Server error');
+      console.error(`[${new Date().toISOString()}] [WS-MSG-ERROR] Error handling message:`, error.message);
     }
   });
 
   ws.on('close', () => {
-    console.log(`[${new Date().toISOString()}] Client disconnected from room: ${roomId}`);
-    room.removeConnection(ws);
-
-    // Clean up empty rooms
-    if (room.isEmpty() && Date.now() - room.createdAt > 60000) {
-      docs.delete(roomId);
-      room.cleanup();
-      console.log(`[${new Date().toISOString()}] Room cleaned up: ${roomId}`);
-    }
+    room.removeClient(ws);
+    console.log(`[${new Date().toISOString()}] [WS-CLOSE] Client disconnected from room ${roomId}`);
   });
 
   ws.on('error', (error) => {
-    console.error(`[${new Date().toISOString()}] WebSocket error:`, error);
+    console.error(`[${new Date().toISOString()}] [WS-ERROR] WebSocket error:`, error.message);
   });
 }
 
-// Create HTTP server
-const server = http.createServer((req, res) => {
+// HTTP request handler
+function handleRequest(req, res) {
+  // Log EVERY request
+  console.log(`[${new Date().toISOString()}] [HTTP] ${req.method} ${req.url} from ${req.headers['user-agent']?.substring(0, 50)}`);
+  
+  // CORS headers
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+  // Handle preflight
+  if (req.method === 'OPTIONS') {
+    res.writeHead(200);
+    res.end();
+    return;
+  }
+
+  // Health check
   if (req.url === '/health') {
     res.writeHead(200);
     res.end('OK');
-  } else if (req.url === '/stats') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
-      rooms: docs.size,
-      totalConnections: Array.from(docs.values()).reduce((sum, room) => sum + room.conns.size, 0),
-      uptime: process.uptime()
-    }));
-  } else {
-    res.writeHead(404);
-    res.end('Not found');
+    return;
   }
-});
+
+  // Statistics
+  if (req.url === '/stats') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    const stats = {
+      rooms: rooms.size,
+      totalClients: Array.from(rooms.values()).reduce((sum, room) => sum + room.clients.size, 0),
+      uptime: process.uptime(),
+      timestamp: new Date().toISOString()
+    };
+    res.end(JSON.stringify(stats, null, 2));
+    return;
+  }
+
+  // Cache endpoint - draw.io sends/retrieves updates here
+  if (req.url.startsWith('/cache')) {
+    if (req.method === 'POST') {
+      let body = '';
+
+      req.on('data', (chunk) => {
+        body += chunk.toString();
+      });
+
+      req.on('end', () => {
+        try {
+          // Parse form data
+          const params = new URLSearchParams(body);
+          const roomId = params.get('id');
+          const msg = params.get('msg');
+          const sid = params.get('sid');
+
+          if (!roomId) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Missing room ID' }));
+            return;
+          }
+
+          const room = getOrCreateRoom(roomId);
+
+          // Store and broadcast the update
+          if (msg) {
+            const update = room.addUpdate(msg, sid);
+
+            console.log(`[${new Date().toISOString()}] Cache update for room ${roomId} (${msg.length} bytes)`);
+            console.log(`[${new Date().toISOString()}] Room ${roomId} has ${room.clients.size} WebSocket clients`);
+
+            // Broadcast to WebSocket clients
+            // Include all fields from the original POST: id, msg, sid
+            let broadcastCount = 0;
+            
+            // Send complete update with all metadata
+            const wsMessage = JSON.stringify({
+              id: roomId,
+              msg: msg,
+              sid: sid,
+              timestamp: Date.now()
+            });
+            
+            console.log(`[${new Date().toISOString()}] Sending complete update JSON (${wsMessage.length} chars, msg=${msg.substring(0, 30)}...) to ${room.clients.size} clients`);
+            
+            for (const client of room.clients) {
+              if (client.readyState === 1) {
+                try {
+                  client.send(wsMessage);
+                  broadcastCount++;
+                  console.log(`[${new Date().toISOString()}] [DEBUG] Sent update to client (${broadcastCount}/${room.clients.size})`);
+                } catch (error) {
+                  console.error(`[${new Date().toISOString()}] [ERROR] Failed to send:`, error.message);
+                }
+              }
+            }
+            console.log(`[${new Date().toISOString()}] Broadcasted update #${update.id} to ${broadcastCount}/${room.clients.size} clients`);
+          }
+
+          // CRITICAL: Respond immediately with success
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: true, id: roomId, timestamp: Date.now() }));
+        } catch (error) {
+          console.error(`[${new Date().toISOString()}] Error handling cache POST:`, error);
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Server error' }));
+        }
+      });
+    } else if (req.method === 'GET') {
+      // GET /cache?id=roomId&lastId=X - retrieve cached updates for polling clients
+      const queryParams = new URL(`http://${req.headers.host}${req.url}`).searchParams;
+      const roomId = queryParams.get('id');
+      const lastId = queryParams.get('lastId') ? parseInt(queryParams.get('lastId')) : null;
+
+      console.log(`[${new Date().toISOString()}] [GET /cache] roomId=${roomId}, lastId=${lastId}`);
+
+      if (!roomId) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Missing room ID' }));
+        return;
+      }
+
+      const room = getOrCreateRoom(roomId);
+      const newUpdates = room.getUpdatesSince(lastId);
+
+      if (newUpdates.length > 0) {
+        // Return ALL new updates, not just the latest
+        const updates = newUpdates.map(u => ({
+          id: u.id,
+          msg: u.msg,
+          sid: u.sid,
+          timestamp: u.timestamp
+        }));
+        
+        console.log(`[${new Date().toISOString()}] [GET /cache] Returning ${updates.length} new updates for room ${roomId}`);
+        
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(updates));
+      } else {
+        console.log(`[${new Date().toISOString()}] [GET /cache] No updates since ${lastId} for room ${roomId}`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify([]));
+      }
+    } else {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true }));
+    }
+    return;
+  }
+
+  // List rooms
+  if (req.url === '/rooms') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    const roomList = Array.from(rooms.entries()).map(([id, room]) => ({
+      id,
+      clients: room.clients.size,
+      createdAt: room.createdAt
+    }));
+    res.end(JSON.stringify(roomList, null, 2));
+    return;
+  }
+
+  // Not found
+  res.writeHead(404);
+  res.end();
+}
+
+// Create HTTP server
+const server = http.createServer(handleRequest);
 
 // Create WebSocket server
-const wss = new WebSocket.Server({ server });
-wss.on('connection', handleConnection);
+const wss = new WebSocketServer({ server });
+wss.on('connection', handleWebSocket);
 
-// Periodic cleanup of empty rooms
+// Cleanup empty rooms every 5 minutes
 setInterval(() => {
-  for (const [roomId, room] of docs.entries()) {
-    if (room.isEmpty() && Date.now() - room.createdAt > ROOMS_CLEANUP_INTERVAL) {
-      docs.delete(roomId);
-      room.cleanup();
-      console.log(`[${new Date().toISOString()}] Cleaned up inactive room: ${roomId}`);
+  for (const [roomId, room] of rooms.entries()) {
+    if (room.clients.size === 0 && Date.now() - room.createdAt > 5 * 60 * 1000) {
+      rooms.delete(roomId);
+      console.log(`[${new Date().toISOString()}] Cleaned up empty room: ${roomId}`);
     }
   }
-}, ROOMS_CLEANUP_INTERVAL);
+}, 5 * 60 * 1000);
 
 // Start server
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`[${new Date().toISOString()}] Real-time server listening on port ${PORT}`);
   console.log(`WebSocket endpoint: ws://0.0.0.0:${PORT}/rt?id=<room-id>`);
+  console.log(`HTTP Cache endpoint: http://0.0.0.0:${PORT}/cache`);
 });
 
 // Graceful shutdown
 process.on('SIGINT', () => {
-  console.log('\nShutting down gracefully...');
+  console.log('\n[Shutdown] Closing server...');
   
-  for (const [roomId, room] of docs.entries()) {
-    room.cleanup();
+  for (const room of rooms.values()) {
+    for (const client of room.clients) {
+      client.close(1000, 'Server shutting down');
+    }
   }
-  
+
   server.close(() => {
-    console.log('Server closed');
+    console.log('[Shutdown] Server closed');
     process.exit(0);
   });
+
+  setTimeout(() => {
+    console.error('[Shutdown] Forced exit');
+    process.exit(1);
+  }, 10000);
 });
