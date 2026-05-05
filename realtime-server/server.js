@@ -91,20 +91,25 @@ function getOrCreateRoom(roomId) {
 function handleWebSocket(ws, req) {
   const queryUrl = url.parse(req.url, true);
   const roomId = queryUrl.query.id;
+  const clientId = Date.now().toString(36) + Math.random().toString(36).substring(2);
   
-  console.log(`[${new Date().toISOString()}] [WS-CONNECT] URL: ${req.url}`);
-  console.log(`[${new Date().toISOString()}] [WS-CONNECT] User-Agent: ${req.headers['user-agent']}`);
-  console.log(`[${new Date().toISOString()}] [WS-CONNECT] Origin: ${req.headers.origin}`);
-
+  console.log(`[${new Date().toISOString()}] [${clientId}] [WS-CONNECT] URL: ${req.url}`);
+  console.log(`[${new Date().toISOString()}] [${clientId}] [WS-CONNECT] User-Agent: ${req.headers['user-agent']}`);
+  console.log(`[${new Date().toISOString()}] [${clientId}] [WS-CONNECT] Origin: ${req.headers.origin}`);
+  
   if (!roomId) {
-    console.warn(`[${new Date().toISOString()}] WebSocket connection without room ID`);
+    console.warn(`[${new Date().toISOString()}] [${clientId}] WebSocket connection without room ID`);
     ws.close(1008, 'Missing room ID');
     return;
   }
-
+  
   const room = getOrCreateRoom(roomId);
   room.addClient(ws);
-  console.log(`[${new Date().toISOString()}] [WS-CONNECT] Successfully added client to room ${roomId}`);
+  console.log(`[${new Date().toISOString()}] [${clientId}] [WS-CONNECT] Successfully added client to room ${roomId}`);
+  
+  // Track client-specific state
+  ws.clientId = clientId;
+  ws.roomId = roomId;
 
   // Send last update to newly connected client with all metadata
   if (room.updates.length > 0) {
@@ -120,15 +125,24 @@ function handleWebSocket(ws, req) {
     }
   }
 
-  // Handle incoming WebSocket messages
+   // Handle incoming WebSocket messages
   ws.on('message', (data) => {
     try {
-      console.log(`[${new Date().toISOString()}] [WS-MSG-IN] Received message from client in room ${roomId} (${data.length} bytes)`);
+      console.log(`[${new Date().toISOString()}] [${ws.clientId}] [WS-MSG-IN] Received message from client in room ${roomId} (${data.length} bytes)`);
+      
+      // Log message content for debugging
+      if (typeof data === 'string') {
+        console.log(`[${new Date().toISOString()}] [${ws.clientId}] [WS-MSG-IN] Text message:`, data.slice(0, 200));
+      } else {
+        console.log(`[${new Date().toISOString()}] [${ws.clientId}] [WS-MSG-IN] Binary message (first 20 bytes):`, Array.from(new Uint8Array(data.slice(0, 20))));
+      }
       
       // Broadcast to other clients
       room.broadcast(data, ws);
+      console.log(`[${new Date().toISOString()}] [${ws.clientId}] [WS-MSG-OUT] Broadcasted message to ${room.clients.size - 1} other clients`);
     } catch (error) {
-      console.error(`[${new Date().toISOString()}] [WS-MSG-ERROR] Error handling message:`, error.message);
+      console.error(`[${new Date().toISOString()}] [${ws.clientId}] [WS-MSG-ERROR] Error handling message:`, error.message);
+      console.error(`[${new Date().toISOString()}] [${ws.clientId}] [WS-MSG-ERROR] Stack:`, error.stack);
     }
   });
 

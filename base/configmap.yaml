@@ -19,7 +19,7 @@ data:
         libs="general;basic" />
     </templates>
   PreConfig.js: |
-    // draw.io PreConfig.js — real-time shim (fixed global dispatcher)
+    // draw.io PreConfig.js — real-time shim with enhanced debugging
     (function () {
       'use strict';
 
@@ -36,7 +36,7 @@ data:
       window.__drawioRealtimeConfig = { enabled: true, wsBase: WS_BASE, httpBase: HTTP_BASE };
       console.log('[DrawIO RT] Configured. WS:', WS_BASE, 'HTTP:', HTTP_BASE);
 
-      // --- Block Pusher CDN scripts (same as before) ---
+      // --- Block Pusher CDN scripts ---
       new MutationObserver(function (mutations) {
         for (let i = 0; i < mutations.length; i++) {
           const nodes = mutations[i].addedNodes;
@@ -60,49 +60,71 @@ data:
         const roomState = { ws, channels: new Set() };
         rooms.set(roomId, roomState);
 
-        // Single global message handler for this WebSocket
+        // Enhanced WebSocket message handler with detailed logging
         ws.addEventListener('message', (event) => {
           let raw;
           try {
             raw = JSON.parse(event.data);
-          } catch (e) {
-            console.warn('[DrawIO RT] Bad WS message:', event.data);
-            return;
-          }
-          console.log('[DrawIO RT] WS message received for room', roomId, 'raw:', raw);
+            console.log('[DrawIO RT] WS Message Received:', {
+              roomId: roomId,
+              timestamp: new Date().toISOString(),
+              dataLength: event.data.length,
+              parsed: raw
+            });
 
-          // Convert to Pusher client-event format: { event: 'client-msg', data: { msg: ... } }
-          const pusherEvent = {
-            event: 'client-msg',
-            data: { msg: raw.msg }
-          };
+            // Verify message structure
+            if (!raw || typeof raw !== 'object') {
+              console.warn('[DrawIO RT] Invalid message structure:', raw);
+              return;
+            }
 
-          // Dispatch to all channels in this room
-          for (const channel of roomState.channels) {
-            // Call every callback bound to any event (but match the event name if possible)
-            for (const evName in channel._bindings) {
-              if (evName === 'client-msg' || evName === 'message') {
-                const callbacks = channel._bindings[evName];
-                for (const cb of callbacks) {
-                  try {
-                    cb(pusherEvent);
-                  } catch (e) {
-                    console.error('[DrawIO RT] Callback error:', e);
+            // Check for expected fields
+            if (!raw.msg && !raw.data) {
+              console.warn('[DrawIO RT] Message missing expected fields:', raw);
+            }
+
+            // Convert to Pusher client-event format
+            const pusherEvent = {
+              event: 'client-msg',
+              data: { msg: raw.msg || raw.data || raw }
+            };
+
+            console.log('[DrawIO RT] Converted to Pusher format:', pusherEvent);
+
+            // Dispatch to all channels in this room
+            for (const channel of roomState.channels) {
+              console.log('[DrawIO RT] Dispatching to channel:', channel._name, 'bindings:', Object.keys(channel._bindings));
+              for (const evName in channel._bindings) {
+                if (evName === 'client-msg' || evName === 'message') {
+                  const callbacks = channel._bindings[evName];
+                  console.log('[DrawIO RT] Calling', callbacks.length, 'callbacks for event', evName);
+                  for (const cb of callbacks) {
+                    try {
+                      cb(pusherEvent);
+                      console.log('[DrawIO RT] Callback executed successfully');
+                    } catch (e) {
+                      console.error('[DrawIO RT] Callback error:', e);
+                    }
                   }
                 }
               }
             }
+          } catch (e) {
+            console.warn('[DrawIO RT] Bad WS message:', event.data);
           }
         });
 
         ws.addEventListener('open', () => {
           console.log('[DrawIO RT] WebSocket OPEN for room', roomId);
+          console.log('[DrawIO RT] WebSocket state:', ws.readyState);
         });
+
         ws.addEventListener('close', (e) => {
           console.warn('[DrawIO RT] WebSocket CLOSED for room', roomId, e.code, e.reason);
           rooms.delete(roomId);
           setTimeout(() => ensureWebSocket(roomId), 3000);
         });
+
         ws.addEventListener('error', (err) => {
           console.error('[DrawIO RT] WebSocket ERROR for room', roomId, err);
         });
@@ -110,10 +132,10 @@ data:
         return ws;
       }
 
-      // --- Pusher Channel (simplified) ---
+      // --- Pusher Channel ---
       function PusherChannel(name) {
         this._name = name;
-        this._bindings = {}; // eventName -> array of callbacks
+        this._bindings = {};
         this._roomId = name.replace(/^presence-/, '');
       }
 
@@ -134,11 +156,10 @@ data:
       };
 
       PusherChannel.prototype.trigger = function (ev, data) {
-        // draw.io does not use channel.trigger for sending (it uses HTTP POST)
         console.log('[DrawIO RT] channel.trigger (ignored)', ev, data);
       };
 
-      // --- Pusher Shim (class) ---
+      // --- Pusher Shim ---
       function PusherShim(appKey, opts) {
         console.log('[DrawIO RT] new Pusher() – shim active, key:', appKey);
         this._channels = {};
@@ -152,7 +173,6 @@ data:
             if (!self._connCallbacks[ev]) self._connCallbacks[ev] = [];
             self._connCallbacks[ev].push(cb);
             if (ev === 'connected') {
-              // pretend we're connected immediately
               setTimeout(() => cb({ socket_id: self.sessionID }), 0);
             }
           }
@@ -176,6 +196,17 @@ data:
           const newState = rooms.get(roomId);
           newState.channels.add(channel);
         }
+
+        // Return channel with unbind method for compatibility
+        channel.unbind = function(event, callback) {
+          console.log('[DrawIO RT] Channel unbind called for event:', event);
+          if (callback && channel._bindings && channel._bindings[event]) {
+            channel._bindings[event] = channel._bindings[event].filter(function(cb) { return cb !== callback; });
+          } else if (channel._bindings && channel._bindings[event]) {
+            delete channel._bindings[event];
+          }
+          return channel;
+        };
         return channel;
       };
 
@@ -210,7 +241,7 @@ data:
         console.warn('[DrawIO RT] window.Pusher set (not locked):', e);
       }
 
-      // --- Redirect /cache fetch and XHR (unchanged, works) ---
+      // --- Redirect /cache fetch and XHR ---
       const _fetch = window.fetch.bind(window);
       window.fetch = function (input, init) {
         let url = typeof input === 'string' ? input : (input instanceof Request ? input.url : String(input));

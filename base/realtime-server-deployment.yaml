@@ -16,7 +16,7 @@ spec:
     spec:
       containers:
         - name: realtime-server
-          image: registry.osalliance.com/drawio/drawio-realtime:v0.0.33
+          image: registry.osalliance.com/drawio/drawio-realtime:v0.0.34
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8081
