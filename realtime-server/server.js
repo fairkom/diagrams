@@ -38,7 +38,10 @@ class Room {
   getUpdatesSince(lastSeenId) {
     if (lastSeenId === undefined || lastSeenId === null) {
       // Return only the latest update if no lastSeenId
-      return this.updates.length > 0 ? [this.updates[this.updates.length - 1]] : [];
+      const latest = room.updates.length ? [room.updates[room.updates.length - 1]] : [];
+      res.end(JSON.stringify(latest.length ? latest[0] : {})); // single object, not array
+    } else {
+      res.end(JSON.stringify(room.getUpdatesSince(lastSeenId)));
     }
     
     // Return all updates after lastSeenId
@@ -108,10 +111,7 @@ function handleWebSocket(ws, req) {
     try {
       const lastUpdate = room.updates[room.updates.length - 1];
       const wsMessage = JSON.stringify({
-        id: roomId,
-        msg: lastUpdate.msg,
-        sid: lastUpdate.sid,
-        timestamp: lastUpdate.timestamp
+        msg: lastUpdate.msg
       });
       ws.send(wsMessage);
       console.log(`[${new Date().toISOString()}] [WS-SEND] Sent cached update #${lastUpdate.id} with metadata to new client in room ${roomId}`);
@@ -212,15 +212,12 @@ function handleRequest(req, res) {
             console.log(`[${new Date().toISOString()}] Room ${roomId} has ${room.clients.size} WebSocket clients`);
 
             // Broadcast to WebSocket clients
-            // Include all fields from the original POST: id, msg, sid
+            // Include all fields from the original POST: id, msg, sid - but we remove those as internal handler only expects msg
             let broadcastCount = 0;
             
             // Send complete update with all metadata
             const wsMessage = JSON.stringify({
-              id: roomId,
-              msg: msg,
-              sid: sid,
-              timestamp: Date.now()
+              msg: msg
             });
             
             console.log(`[${new Date().toISOString()}] Sending complete update JSON (${wsMessage.length} chars, msg=${msg.substring(0, 30)}...) to ${room.clients.size} clients`);
@@ -241,7 +238,7 @@ function handleRequest(req, res) {
 
           // CRITICAL: Respond immediately with success
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ success: true, id: roomId, timestamp: Date.now() }));
+          res.end(JSON.stringify({ msg: msg, id: roomId, sid: sid }));
         } catch (error) {
           console.error(`[${new Date().toISOString()}] Error handling cache POST:`, error);
           res.writeHead(500, { 'Content-Type': 'application/json' });

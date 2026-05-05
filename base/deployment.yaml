@@ -24,8 +24,64 @@ spec:
             - name: DRAWIO_CONFIG
               value: /config/drawio-config.json
             - name: DRAWIO_SELF_CONTAINED
-              value: "1" 
-              # offline mode, no external calls
+              value: "1"
+            - name: PRE_CONFIG_JS_URL
+              value: "https://drawio-dev.fairkom.net/js/PreConfig.js"   # or absolute: "https://drawio-dev.fairkom.net/js/PreConfig.js"              
+          # Override the container command so we can:
+          #   1. Run the original docker-entrypoint.sh (which writes PreConfig.js)
+          #   2. Immediately overwrite PreConfig.js with our version
+          #   3. Then start Tomcat (catalina.sh run)
+          # This is race-free because Tomcat hasn't started yet when we overwrite.
+          command:
+            - sh
+            - -c
+            - |
+              # Run the entrypoint script to do all its setup (SSL certs, config writes, etc.)
+              # but stop it before it launches Tomcat — we do that ourselves below.
+              # The entrypoint ends with: exec "$@"  (which would run catalina.sh)
+              # We source it in a subshell that traps the exec, OR we just run it
+              # knowing it will exec into catalina.sh and block.
+              #
+              # Simplest race-free approach: run entrypoint in background, wait for
+              # it to write PreConfig.js, overwrite, then let Tomcat keep running.
+              #
+              # Even simpler: the entrypoint just writes files then execs catalina.sh.
+              # We can replicate the relevant parts ourselves:
+
+              CATALINA_HOME=/usr/local/tomcat
+
+              echo "=== Writing PreConfig.js with realtime shim ==="
+
+              # Step 1: let the original entrypoint run all its setup
+              # It will exec into catalina.sh at the end — we need to intercept that.
+              # We do this by temporarily replacing catalina.sh with a no-op,
+              # running the entrypoint, then restoring and starting Tomcat.
+
+              # Save original catalina.sh
+              cp $CATALINA_HOME/bin/catalina.sh $CATALINA_HOME/bin/catalina.sh.orig
+
+              # Replace with no-op that just exits 0
+              echo '#!/bin/sh' > $CATALINA_HOME/bin/catalina.sh
+              echo 'echo "catalina intercepted"' >> $CATALINA_HOME/bin/catalina.sh
+              echo 'exit 0' >> $CATALINA_HOME/bin/catalina.sh
+              chmod +x $CATALINA_HOME/bin/catalina.sh
+
+              # Run the entrypoint — it will write PreConfig.js then call our no-op catalina
+              /usr/local/bin/docker-entrypoint.sh catalina.sh run || true
+
+              # Restore real catalina.sh
+              cp $CATALINA_HOME/bin/catalina.sh.orig $CATALINA_HOME/bin/catalina.sh
+
+              echo "=== Entrypoint finished, now injecting our PreConfig.js ==="
+
+              # Overwrite with our version that includes the realtime shim
+              cp /config/PreConfig.js $CATALINA_HOME/webapps/draw/js/PreConfig.js
+
+              echo "=== PreConfig.js content (first 3 lines) ==="
+              head -3 $CATALINA_HOME/webapps/draw/js/PreConfig.js
+
+              echo "=== Starting Tomcat ==="
+              exec $CATALINA_HOME/bin/catalina.sh run
           volumeMounts:
             - name: drawio-config-volume
               mountPath: /config
@@ -33,15 +89,21 @@ spec:
             - name: drawio-templates-volume
               mountPath: /templates
               readOnly: true
+            - name: drawio-config
+              mountPath: /usr/share/webapps/drawio/js/PreConfig.js
+              subPath: PreConfig.js              
           livenessProbe:
             httpGet:
               path: /
               port: 8080
-            initialDelaySeconds: 5
+            initialDelaySeconds: 20
+            periodSeconds: 10
           readinessProbe:
             httpGet:
               path: /
               port: 8080
+            initialDelaySeconds: 20
+            periodSeconds: 5
       volumes:
         - name: drawio-config-volume
           configMap:
@@ -49,9 +111,14 @@ spec:
             items:
               - key: drawio-config.json
                 path: drawio-config.json
+              - key: PreConfig.js
+                path: PreConfig.js
         - name: drawio-templates-volume
           configMap:
             name: drawio-config
             items:
               - key: templates.xml
                 path: templates.xml
+        - name: drawio-config
+          configMap:
+            name: drawio-config

@@ -17,11 +17,223 @@ data:
         url="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'/>"
         preview=""
         libs="general;basic" />
-      <template
-        section="Custom"
-        subsection="AWS"
-        title="Simple VPC"
-        url="https://raw.githubusercontent.com/jgraph/drawio-libs/master/libs/aws3.xml"
-        preview=""
-        libs="general;basic;aws3" />
     </templates>
+  PreConfig.js: |
+    // draw.io PreConfig.js — real-time shim (fixed global dispatcher)
+    (function () {
+      'use strict';
+
+      if (window.__drawioRealtimeConfig) {
+        console.log('[DrawIO RT] Already configured');
+        return;
+      }
+
+      const loc = window.location;
+      const wsProtocol = loc.protocol === 'https:' ? 'wss:' : 'ws:';
+      const WS_BASE = wsProtocol + '//' + loc.host + '/rt';
+      const HTTP_BASE = loc.protocol + '//' + loc.host + '/cache';
+
+      window.__drawioRealtimeConfig = { enabled: true, wsBase: WS_BASE, httpBase: HTTP_BASE };
+      console.log('[DrawIO RT] Configured. WS:', WS_BASE, 'HTTP:', HTTP_BASE);
+
+      // --- Block Pusher CDN scripts (same as before) ---
+      new MutationObserver(function (mutations) {
+        for (let i = 0; i < mutations.length; i++) {
+          const nodes = mutations[i].addedNodes;
+          for (let j = 0; j < nodes.length; j++) {
+            const node = nodes[j];
+            if (node.nodeName === 'SCRIPT' && node.src && node.src.includes('pusher.com')) {
+              node.remove();
+              console.log('[DrawIO RT] Blocked Pusher CDN script:', node.src);
+            }
+          }
+        }
+      }).observe(document.documentElement, { childList: true, subtree: true });
+
+      // --- Single global WebSocket management ---
+      const rooms = new Map(); // roomId -> { ws, channels: Set<PusherChannel> }
+
+      function ensureWebSocket(roomId) {
+        if (rooms.has(roomId)) return rooms.get(roomId).ws;
+
+        const ws = new WebSocket(WS_BASE + '?id=' + encodeURIComponent(roomId));
+        const roomState = { ws, channels: new Set() };
+        rooms.set(roomId, roomState);
+
+        // Single global message handler for this WebSocket
+        ws.addEventListener('message', (event) => {
+          let raw;
+          try {
+            raw = JSON.parse(event.data);
+          } catch (e) {
+            console.warn('[DrawIO RT] Bad WS message:', event.data);
+            return;
+          }
+          console.log('[DrawIO RT] WS message received for room', roomId, 'raw:', raw);
+
+          // Convert to Pusher client-event format: { event: 'client-msg', data: { msg: ... } }
+          const pusherEvent = {
+            event: 'client-msg',
+            data: { msg: raw.msg }
+          };
+
+          // Dispatch to all channels in this room
+          for (const channel of roomState.channels) {
+            // Call every callback bound to any event (but match the event name if possible)
+            for (const evName in channel._bindings) {
+              if (evName === 'client-msg' || evName === 'message') {
+                const callbacks = channel._bindings[evName];
+                for (const cb of callbacks) {
+                  try {
+                    cb(pusherEvent);
+                  } catch (e) {
+                    console.error('[DrawIO RT] Callback error:', e);
+                  }
+                }
+              }
+            }
+          }
+        });
+
+        ws.addEventListener('open', () => {
+          console.log('[DrawIO RT] WebSocket OPEN for room', roomId);
+        });
+        ws.addEventListener('close', (e) => {
+          console.warn('[DrawIO RT] WebSocket CLOSED for room', roomId, e.code, e.reason);
+          rooms.delete(roomId);
+          setTimeout(() => ensureWebSocket(roomId), 3000);
+        });
+        ws.addEventListener('error', (err) => {
+          console.error('[DrawIO RT] WebSocket ERROR for room', roomId, err);
+        });
+
+        return ws;
+      }
+
+      // --- Pusher Channel (simplified) ---
+      function PusherChannel(name) {
+        this._name = name;
+        this._bindings = {}; // eventName -> array of callbacks
+        this._roomId = name.replace(/^presence-/, '');
+      }
+
+      PusherChannel.prototype.bind = function (ev, cb) {
+        console.log('[DrawIO RT] bind("' + ev + '") on channel "' + this._name + '"');
+        if (!this._bindings[ev]) this._bindings[ev] = [];
+        this._bindings[ev].push(cb);
+        return this;
+      };
+
+      PusherChannel.prototype.unbind = function (ev, cb) {
+        if (cb && this._bindings[ev]) {
+          this._bindings[ev] = this._bindings[ev].filter(f => f !== cb);
+        } else {
+          delete this._bindings[ev];
+        }
+        return this;
+      };
+
+      PusherChannel.prototype.trigger = function (ev, data) {
+        // draw.io does not use channel.trigger for sending (it uses HTTP POST)
+        console.log('[DrawIO RT] channel.trigger (ignored)', ev, data);
+      };
+
+      // --- Pusher Shim (class) ---
+      function PusherShim(appKey, opts) {
+        console.log('[DrawIO RT] new Pusher() – shim active, key:', appKey);
+        this._channels = {};
+        this._connCallbacks = {};
+        this.sessionID = 'local-' + Math.random().toString(36).slice(2);
+
+        const self = this;
+        this.connection = {
+          state: 'initialized',
+          bind: function (ev, cb) {
+            if (!self._connCallbacks[ev]) self._connCallbacks[ev] = [];
+            self._connCallbacks[ev].push(cb);
+            if (ev === 'connected') {
+              // pretend we're connected immediately
+              setTimeout(() => cb({ socket_id: self.sessionID }), 0);
+            }
+          }
+        };
+      }
+
+      PusherShim.prototype.subscribe = function (channelName) {
+        console.log('[DrawIO RT] subscribe("' + channelName + '")');
+        if (!this._channels[channelName]) {
+          this._channels[channelName] = new PusherChannel(channelName);
+        }
+        const channel = this._channels[channelName];
+        const roomId = channel._roomId;
+
+        // Ensure WebSocket exists and register this channel
+        const roomState = rooms.get(roomId);
+        if (roomState) {
+          roomState.channels.add(channel);
+        } else {
+          const ws = ensureWebSocket(roomId);
+          const newState = rooms.get(roomId);
+          newState.channels.add(channel);
+        }
+        return channel;
+      };
+
+      PusherShim.prototype.unsubscribe = function (channelName) {
+        const channel = this._channels[channelName];
+        if (channel) {
+          const roomState = rooms.get(channel._roomId);
+          if (roomState) roomState.channels.delete(channel);
+          delete this._channels[channelName];
+        }
+      };
+
+      PusherShim.prototype.disconnect = function () {
+        for (const roomId of rooms.keys()) {
+          const state = rooms.get(roomId);
+          if (state.ws) state.ws.close();
+          rooms.delete(roomId);
+        }
+      };
+
+      // --- Lock window.Pusher ---
+      try {
+        Object.defineProperty(window, 'Pusher', {
+          value: PusherShim,
+          writable: false,
+          configurable: false,
+          enumerable: true
+        });
+        console.log('[DrawIO RT] window.Pusher locked');
+      } catch (e) {
+        window.Pusher = PusherShim;
+        console.warn('[DrawIO RT] window.Pusher set (not locked):', e);
+      }
+
+      // --- Redirect /cache fetch and XHR (unchanged, works) ---
+      const _fetch = window.fetch.bind(window);
+      window.fetch = function (input, init) {
+        let url = typeof input === 'string' ? input : (input instanceof Request ? input.url : String(input));
+        if (url.includes('pusher.com')) return Promise.reject(new Error('Pusher CDN blocked'));
+        if (/\/cache(\?|$)/.test(url)) {
+          const dst = HTTP_BASE + new URL(url, loc.href).search;
+          console.log('[DrawIO RT] fetch /cache ->', dst);
+          return _fetch(typeof input === 'string' ? dst : new Request(dst, input), init);
+        }
+        return _fetch(input, init);
+      };
+
+      const _open = XMLHttpRequest.prototype.open;
+      XMLHttpRequest.prototype.open = function (method, url) {
+        const args = Array.prototype.slice.call(arguments);
+        if (typeof url === 'string' && /\/cache(\?|$)/.test(url)) {
+          try {
+            args[1] = HTTP_BASE + new URL(url, loc.href).search;
+            console.log('[DrawIO RT] XHR /cache ->', args[1]);
+          } catch (_) {}
+        }
+        return _open.apply(this, args);
+      };
+
+      console.log('[DrawIO RT] Setup complete');
+    })();

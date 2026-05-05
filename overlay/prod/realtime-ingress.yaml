@@ -9,13 +9,27 @@ metadata:
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
     # Disable request body size limit for large diagrams
     nginx.ingress.kubernetes.io/proxy-body-size: "0"
+    # Required for WebSocket upgrade headers to be forwarded
+    nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection "upgrade";
 spec:
   ingressClassName: nginx
   rules:
     - host: drawio.example.com  # Change to your production domain
       http:
         paths:
+          # WebSocket endpoint — draw.io connects here for live push updates
           - path: /rt
+            pathType: Prefix
+            backend:
+              service:
+                name: drawio-realtime
+                port:
+                  number: 8081
+          # HTTP endpoint — draw.io POSTs diagram updates and GETs missed ones
+          - path: /cache
             pathType: Prefix
             backend:
               service:

@@ -1,202 +1,259 @@
 /**
  * Draw.io Real-Time Collaboration Client Integration
- * 
- * This script patches draw.io to use the local real-time server
- * instead of Cloudflare's infrastructure.
- * 
- * Insert this script in the draw.io HTML before the main app.min.js
+ *
+ * Patches draw.io to use a local real-time server instead of Pusher/Cloudflare.
+ * Insert this script in the draw.io HTML BEFORE app.min.js loads.
+ *
+ * How draw.io uses Pusher:
+ *   1. new Pusher(appKey, options)
+ *   2. pusher.subscribe(channelName)         -> Channel object
+ *   3. channel.bind('message', callback)     -> receive diagram updates
+ *   4. pusher.connection.bind('connected', cb)
+ *   5. POSTs diagram XML to /cache?id=<room> -> broadcast to others
+ *   6. GETs /cache?id=<room>                 -> poll for missed updates
  */
 
-(function() {
-  try {
-    // Only configure if not already configured
-    if (window.__drawioRealtimeConfig) {
-      console.log('[DrawIO RT] Real-time already configured, skipping');
-      return;
-    }
-    
-    // Block Pusher.js script loading by removing script tags
-    const blockPusherScripts = () => {
-      const observer = new MutationObserver((mutations) => {
-        mutations.forEach((mutation) => {
-          mutation.addedNodes.forEach((node) => {
-            if (node.nodeName === 'SCRIPT' && node.src && node.src.includes('pusher.com')) {
-              console.log('[DrawIO RT] Removing Pusher.js script tag:', node.src);
-              node.remove();
-            }
-          });
-        });
-      });
-      
-      observer.observe(document.documentElement, {
-        childList: true,
-        subtree: true
-      });
-      
-      // Check existing scripts
-      document.querySelectorAll('script[src*="pusher.com"]').forEach(script => {
-        console.log('[DrawIO RT] Removing existing Pusher.js script:', script.src);
-        script.remove();
-      });
-    };
-    
-    // Start blocking immediately
-    blockPusherScripts();
-    
-    // Determine the real-time server URL
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = window.location.hostname;
-    const port = window.location.port ? ':' + window.location.port : '';
-    
-    // Real-time server is expected at the same host but on a different port internally
-    // Via Ingress, it will be proxied to drawio-realtime:8081
-    const realtimeServerUrl = `${protocol}//${host}${port}/realtime`;
-    
-    // Override the real-time API endpoint
-    window.__drawioRealtimeConfig = {
-      enabled: true,
-      serverUrl: realtimeServerUrl,
-      collabEnabled: true,
-    };
-    
-    console.log('[DrawIO RT] Real-time server configured:', realtimeServerUrl);
-  } catch (error) {
-    console.error('[DrawIO RT] Configuration error:', error);
-  }
-})();
+(function () {
+  'use strict';
 
-  // Patch mxResources to include real-time strings if needed
-  if (window.mxResources) {
-    window.mxResources.set('realtime', 'Real-time Collaboration');
+  if (window.__drawioRealtimeConfig) {
+    console.log('[DrawIO RT] Already configured, skipping');
+    return;
   }
 
-  console.log('[DrawIO RT] Real-time server configured:', realtimeServerUrl);
+  // ── URL resolution ────────────────────────────────────────────────────────
+  // These must match your ingress paths:
+  //   /rt    -> drawio-realtime service (WebSocket)
+  //   /cache -> drawio-realtime service (HTTP POST/GET)
+  const loc         = window.location;
+  const wsProtocol  = loc.protocol === 'https:' ? 'wss:' : 'ws:';
+  const hostAndPort = loc.host;
 
-  // Hook into the app initialization to inject real-time support
-  const originalAddEventListener = window.addEventListener;
-  window.addEventListener = function(type, listener, options) {
-    if (type === 'load') {
-      const wrappedListener = function(event) {
-        // Inject real-time support after app loads
-        try {
-          // Small delay to ensure DOM is fully ready
-          setTimeout(() => {
-            if (window.EditorUi && window.EditorUi.prototype) {
-              initializeRealtimeSupport();
-            }
-          }, 100);
-        } catch (error) {
-          console.error('[DrawIO RT] Error initializing real-time support:', error);
+  const WS_BASE   = wsProtocol + '//' + hostAndPort + '/rt';
+  const HTTP_BASE = loc.protocol + '//' + hostAndPort + '/cache';
+
+  window.__drawioRealtimeConfig = { enabled: true, wsBase: WS_BASE, httpBase: HTTP_BASE };
+  console.log('[DrawIO RT] Configured -- WS:', WS_BASE, '| HTTP:', HTTP_BASE);
+
+  // ── 1. Block Pusher.js CDN ────────────────────────────────────────────────
+  new MutationObserver(function(mutations) {
+    for (var i = 0; i < mutations.length; i++) {
+      var nodes = mutations[i].addedNodes;
+      for (var j = 0; j < nodes.length; j++) {
+        var node = nodes[j];
+        if (node.nodeName === 'SCRIPT' && node.src && node.src.includes('pusher.com')) {
+          node.remove();
+          console.log('[DrawIO RT] Blocked Pusher script:', node.src);
         }
-        return listener.call(this, event);
-      };
-      return originalAddEventListener.call(this, type, wrappedListener, options);
+      }
     }
-    return originalAddEventListener.call(this, type, listener, options);
+  }).observe(document.documentElement, { childList: true, subtree: true });
+
+  document.querySelectorAll('script[src*="pusher.com"]').forEach(function(s) {
+    s.remove();
+    console.log('[DrawIO RT] Removed existing Pusher script:', s.src);
+  });
+
+  // ── 2. Pusher shim ────────────────────────────────────────────────────────
+  //
+  // CRITICAL FIX: PusherChannel no longer takes a ws in its constructor.
+  // PusherShim calls channel._attachWs(ws) once the socket is actually open.
+  // The old code passed this._ws (null) at subscribe() time, so addEventListener
+  // was called on a dummy object and messages were never dispatched.
+
+  function PusherChannel(channelName) {
+    this._name     = channelName;
+    this._bindings = {};
+    this._ws       = null;
+  }
+
+  PusherChannel.prototype._attachWs = function(ws) {
+    // Avoid double-attaching the same socket instance
+    if (this._ws === ws) return;
+    this._ws = ws;
+    var self = this;
+    ws.addEventListener('message', function(wsEvent) {
+      var raw;
+      try {
+        raw = JSON.parse(wsEvent.data);
+      } catch (e) {
+        console.warn('[DrawIO RT] Unparseable WS message:', wsEvent.data);
+        return;
+      }
+
+      var boundEvents = Object.keys(self._bindings);
+      console.log('[DrawIO RT] WS message on channel "' + self._name + '"',
+                  '| bound events:', boundEvents,
+                  '| payload:', JSON.stringify(raw).substring(0, 100));
+
+      // Fire every registered handler — draw.io typically uses 'message',
+      // some versions use 'client-msg'. We fire all of them.
+      for (var eventName in self._bindings) {
+        var handlers = self._bindings[eventName];
+        for (var k = 0; k < handlers.length; k++) {
+          try {
+            handlers[k](raw);
+          } catch (cbErr) {
+            console.error('[DrawIO RT] Handler for "' + eventName + '" threw:', cbErr);
+          }
+        }
+      }
+    });
+    console.log('[DrawIO RT] WS attached to channel "' + this._name + '"');
   };
 
-  /**
-   * Initialize real-time collaboration support
-   */
-  function initializeRealtimeSupport() {
-    console.log('[DrawIO RT] Initializing real-time support...');
-    
-    // Monitor for collaboration requests
-    if (window.EditorUi.prototype.share) {
-      const originalShare = window.EditorUi.prototype.share;
-      window.EditorUi.prototype.share = function() {
-        console.log('[DrawIO RT] Share function called, using local real-time server');
-        return originalShare.apply(this, arguments);
-      };
-    }
+  PusherChannel.prototype.bind = function(eventName, callback) {
+    if (!this._bindings[eventName]) this._bindings[eventName] = [];
+    this._bindings[eventName].push(callback);
+    console.log('[DrawIO RT] channel.bind("' + eventName + '") on "' + this._name + '"');
+    return this;
+  };
 
-   // Hook into any network calls to redirect to local server
-    function monitorNetworkCalls() {
-      const originalFetch = window.fetch;
-      
-      window.fetch = function(url, options) {
-        // Redirect real-time requests to local server
-        if (typeof url === 'string' && (url.includes('/rt') || url.includes('/cache') || url.includes('/join') || url.includes('/sync'))) {
-          let realtimeUrl;
-          if (url.includes('/rt')) {
-            // WebSocket URL - use the WebSocket server URL
-            realtimeUrl = url.replace(/https?:\/\/[^\/]+/, window.__drawioRealtimeConfig.serverUrl);
-          } else {
-            // HTTP URL - use the HTTP server URL
-            realtimeUrl = url.replace(/https?:\/\/[^\/]+/, window.__drawioRealtimeConfig.httpServerUrl || window.__drawioRealtimeConfig.serverUrl.replace(/^wss?:/, 'https:'));
-          }
-          console.log('[DrawIO RT] Redirecting to local server:', realtimeUrl);
-          return originalFetch(realtimeUrl, options);
-        }
-        
-        // Block external Pusher.js loading
-        if (typeof url === 'string' && url.includes('js.pusher.com')) {
-          console.log('[DrawIO RT] Blocking external Pusher.js loading');
-          return Promise.reject(new Error('External Pusher.js blocked - using local real-time server'));
-        }
-        
-        return originalFetch(url, options);
-      };
+  PusherChannel.prototype.unbind = function(eventName, callback) {
+    if (callback && this._bindings[eventName]) {
+      this._bindings[eventName] = this._bindings[eventName].filter(function(cb) { return cb !== callback; });
+    } else {
+      delete this._bindings[eventName];
     }
+    return this;
+  };
 
-  /**
-   * Monitor and redirect network calls related to real-time collaboration
-   */
-  function monitorNetworkCalls() {
-    const originalFetch = window.fetch;
-    
-    window.fetch = function(url, options) {
-      // Redirect real-time requests to local server
-      if (typeof url === 'string' && url.includes('/rt')) {
-        const realtimeUrl = url.replace(/https?:\/\/[^\/]+/, window.__drawioRealtimeConfig.serverUrl);
-        console.log('[DrawIO RT] Redirecting to local server:', realtimeUrl);
-        return originalFetch(realtimeUrl, options);
+  PusherChannel.prototype.trigger = function(eventName, data) {
+    if (this._ws && this._ws.readyState === WebSocket.OPEN) {
+      this._ws.send(JSON.stringify(data));
+    }
+  };
+
+  // ─────────────────────────────────────────────────────────────────────────
+
+  function PusherShim(appKey, options) {
+    console.log('[DrawIO RT] new Pusher() intercepted, appKey:', appKey);
+    this._options       = options || {};
+    this._channels      = {};
+    this._connCallbacks = {};
+    this._ws            = null;
+    this.sessionID      = 'local-' + Math.random().toString(36).slice(2);
+
+    var self = this;
+    this.connection = {
+      state: 'initialized',
+      bind: function(event, callback) {
+        if (!self._connCallbacks[event]) self._connCallbacks[event] = [];
+        self._connCallbacks[event].push(callback);
+        // Fire immediately if already connected
+        if (event === 'connected' && self._ws && self._ws.readyState === WebSocket.OPEN) {
+          setTimeout(function() { callback({ socket_id: 'local' }); }, 0);
+        }
       }
-      return originalFetch(url, options);
     };
   }
 
-  // Provide Pusher shim to redirect to our real-time server
-  if (window.__drawioRealtimeConfig.blockExternalPusher !== false) {
-    console.log('[DrawIO RT] Setting up Pusher shim to use local real-time server');
-    
-    // Create minimal Pusher shim
-    window.Pusher = class {
-      constructor(appKey, options) {
-        console.log('[DrawIO RT] Pusher initialization intercepted');
-        return {
-          connect: () => {
-            console.log('[DrawIO RT] Pusher connect redirected to local WebSocket');
-            // Our real-time server handles the actual connection
-          },
-          subscribe: (channel) => {
-            console.log('[DrawIO RT] Pusher subscribe redirected:', channel);
-            return {
-              bind: (event, callback) => {
-                console.log('[DrawIO RT] Pusher event binding redirected:', event);
-                // Our real-time server handles actual event binding
-              }
-            };
-          },
-          connection: {
-            bind: (event, callback) => {
-              if (event === 'connected') {
-                console.log('[DrawIO RT] Pusher connected event triggered');
-                setTimeout(() => callback({}), 100); // Simulate connection
-              }
-            }
-          }
-        };
+  PusherShim.prototype._openWebSocket = function(roomId) {
+    if (this._ws && this._ws.readyState <= WebSocket.OPEN) return;
+    var self   = this;
+    var wsUrl  = WS_BASE + '?id=' + encodeURIComponent(roomId);
+    console.log('[DrawIO RT] Opening WebSocket:', wsUrl);
+    this._ws = new WebSocket(wsUrl);
+
+    this._ws.addEventListener('open', function() {
+      console.log('[DrawIO RT] WebSocket OPEN for room:', roomId);
+      self.connection.state = 'connected';
+
+      // Attach live socket to all channels NOW — this is the critical fix
+      for (var name in self._channels) {
+        self._channels[name]._attachWs(self._ws);
       }
-    };
-    
-    console.log('[DrawIO RT] Pusher shim installed - external Pusher blocked');
-  }
-  
-  // Expose API for debugging
+
+      var cbs = self._connCallbacks['connected'] || [];
+      for (var i = 0; i < cbs.length; i++) {
+        cbs[i]({ socket_id: 'local' });
+      }
+    });
+
+    this._ws.addEventListener('close', function(ev) {
+      console.warn('[DrawIO RT] WebSocket CLOSED:', ev.code, ev.reason);
+      self.connection.state = 'disconnected';
+      var dcbs = self._connCallbacks['disconnected'] || [];
+      for (var i = 0; i < dcbs.length; i++) dcbs[i]({});
+      setTimeout(function() { self._openWebSocket(roomId); }, 3000);
+    });
+
+    this._ws.addEventListener('error', function(ev) {
+      console.error('[DrawIO RT] WebSocket ERROR', ev);
+    });
+  };
+
+  PusherShim.prototype.subscribe = function(channelName) {
+    console.log('[DrawIO RT] pusher.subscribe("' + channelName + '")');
+    var roomId = channelName.replace(/^presence-/, '');
+
+    if (!this._channels[channelName]) {
+      this._channels[channelName] = new PusherChannel(channelName);
+    }
+
+    this._openWebSocket(roomId);
+
+    // If the WS opened synchronously (unlikely but possible), attach now
+    if (this._ws && this._ws.readyState === WebSocket.OPEN) {
+      this._channels[channelName]._attachWs(this._ws);
+    }
+
+    return this._channels[channelName];
+  };
+
+  PusherShim.prototype.unsubscribe = function(channelName) {
+    delete this._channels[channelName];
+  };
+
+  PusherShim.prototype.disconnect = function() {
+    if (this._ws) this._ws.close();
+  };
+
+  window.Pusher = PusherShim;
+  console.log('[DrawIO RT] Pusher shim installed');
+
+  // ── 3. Redirect /cache fetch() calls ─────────────────────────────────────
+  var _originalFetch = window.fetch.bind(window);
+
+  window.fetch = function(input, init) {
+    var urlStr = typeof input === 'string' ? input
+               : (input instanceof Request ? input.url : String(input));
+
+    if (urlStr.includes('js.pusher.com') || urlStr.includes('pusher.com/')) {
+      console.log('[DrawIO RT] fetch blocked (Pusher CDN):', urlStr);
+      return Promise.reject(new Error('Pusher CDN blocked'));
+    }
+
+    if (/\/cache(\?|$)/.test(urlStr)) {
+      var q   = new URL(urlStr, window.location.href).search;
+      var dst = HTTP_BASE + q;
+      console.log('[DrawIO RT] fetch /cache ->', dst);
+      return _originalFetch(typeof input === 'string' ? dst : new Request(dst, input), init);
+    }
+
+    return _originalFetch(input, init);
+  };
+
+  // ── 4. Redirect /cache XHR calls ─────────────────────────────────────────
+  var _XHRopen = XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open = function(method, url) {
+    var args = Array.prototype.slice.call(arguments);
+    if (typeof url === 'string' && /\/cache(\?|$)/.test(url)) {
+      try {
+        var q   = new URL(url, window.location.href).search;
+        var dst = HTTP_BASE + q;
+        console.log('[DrawIO RT] XHR /cache ->', dst);
+        args[1] = dst;
+      } catch (_) {}
+    }
+    return _XHRopen.apply(this, args);
+  };
+
+  // ── 5. Debug helpers ──────────────────────────────────────────────────────
   window.__drawioRT = {
-    getServerUrl: () => realtimeServerUrl,
-    getConfig: () => window.__drawioRealtimeConfig,
-    log: (msg) => console.log('[DrawIO RT]', msg)
+    getConfig:   function() { return window.__drawioRealtimeConfig; },
+    getChannels: function() { return window.Pusher && window.Pusher._channels; },
   };
+
+  console.log('[DrawIO RT] Setup complete');
 })();
