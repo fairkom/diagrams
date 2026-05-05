@@ -25,62 +25,51 @@ spec:
               value: /config/drawio-config.json
             - name: DRAWIO_SELF_CONTAINED
               value: "1"
+            # PRE_CONFIG_JS_URL is no longer needed, but we keep it harmless
             - name: PRE_CONFIG_JS_URL
-              value: "https://drawio-dev.fairkom.net/js/PreConfig.js"   # or absolute: "https://drawio-dev.fairkom.net/js/PreConfig.js"              
-          # Override the container command so we can:
-          #   1. Run the original docker-entrypoint.sh (which writes PreConfig.js)
-          #   2. Immediately overwrite PreConfig.js with our version
-          #   3. Then start Tomcat (catalina.sh run)
-          # This is race-free because Tomcat hasn't started yet when we overwrite.
+              value: "https://drawio-dev.fairkom.net/js/PreConfig.js"
           command:
             - sh
             - -c
             - |
-              # Run the entrypoint script to do all its setup (SSL certs, config writes, etc.)
-              # but stop it before it launches Tomcat — we do that ourselves below.
-              # The entrypoint ends with: exec "$@"  (which would run catalina.sh)
-              # We source it in a subshell that traps the exec, OR we just run it
-              # knowing it will exec into catalina.sh and block.
-              #
-              # Simplest race-free approach: run entrypoint in background, wait for
-              # it to write PreConfig.js, overwrite, then let Tomcat keep running.
-              #
-              # Even simpler: the entrypoint just writes files then execs catalina.sh.
-              # We can replicate the relevant parts ourselves:
-
               CATALINA_HOME=/usr/local/tomcat
+              WEBAPP_DIR=$CATALINA_HOME/webapps/draw
 
-              echo "=== Writing PreConfig.js with realtime shim ==="
-
-              # Step 1: let the original entrypoint run all its setup
-              # It will exec into catalina.sh at the end — we need to intercept that.
-              # We do this by temporarily replacing catalina.sh with a no-op,
-              # running the entrypoint, then restoring and starting Tomcat.
-
+              echo "=== Step 1: Run original entrypoint without starting Tomcat ==="
               # Save original catalina.sh
               cp $CATALINA_HOME/bin/catalina.sh $CATALINA_HOME/bin/catalina.sh.orig
 
-              # Replace with no-op that just exits 0
+              # Replace with no‑op
               echo '#!/bin/sh' > $CATALINA_HOME/bin/catalina.sh
               echo 'echo "catalina intercepted"' >> $CATALINA_HOME/bin/catalina.sh
               echo 'exit 0' >> $CATALINA_HOME/bin/catalina.sh
               chmod +x $CATALINA_HOME/bin/catalina.sh
 
-              # Run the entrypoint — it will write PreConfig.js then call our no-op catalina
+              # Run entrypoint – it writes PreConfig.js (original) then calls our no‑op
               /usr/local/bin/docker-entrypoint.sh catalina.sh run || true
 
               # Restore real catalina.sh
               cp $CATALINA_HOME/bin/catalina.sh.orig $CATALINA_HOME/bin/catalina.sh
 
-              echo "=== Entrypoint finished, now injecting our PreConfig.js ==="
+              echo "=== Step 2: Overwrite PreConfig.js with our realtime shim ==="
+              cp /config/PreConfig.js $WEBAPP_DIR/js/PreConfig.js
 
-              # Overwrite with our version that includes the realtime shim
-              cp /config/PreConfig.js $CATALINA_HOME/webapps/draw/js/PreConfig.js
+              echo "=== Step 3: Inject script tag into index.html ==="
+              # Ensure index.html exists
+              if [ -f $WEBAPP_DIR/index.html ]; then
+                # Check if already injected
+                if ! grep -q 'PreConfig.js' $WEBAPP_DIR/index.html; then
+                  # Insert before </head>
+                  sed -i 's|</head>|<script src="js/PreConfig.js"></script>\n</head>|' $WEBAPP_DIR/index.html
+                  echo "✅ Injected PreConfig.js into index.html"
+                else
+                  echo "✅ PreConfig.js already referenced in index.html"
+                fi
+              else
+                echo "⚠️  index.html not found at $WEBAPP_DIR/index.html"
+              fi
 
-              echo "=== PreConfig.js content (first 3 lines) ==="
-              head -3 $CATALINA_HOME/webapps/draw/js/PreConfig.js
-
-              echo "=== Starting Tomcat ==="
+              echo "=== Step 4: Start Tomcat ==="
               exec $CATALINA_HOME/bin/catalina.sh run
           volumeMounts:
             - name: drawio-config-volume
@@ -91,7 +80,7 @@ spec:
               readOnly: true
             - name: drawio-config
               mountPath: /usr/share/webapps/drawio/js/PreConfig.js
-              subPath: PreConfig.js              
+              subPath: PreConfig.js
           livenessProbe:
             httpGet:
               path: /
