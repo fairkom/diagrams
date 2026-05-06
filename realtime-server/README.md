@@ -1,110 +1,91 @@
-# Draw.io Real-Time Collaboration Server
+# draw.io Real-Time Server
 
-A Node.js WebSocket server that enables real-time collaborative editing for self-hosted draw.io deployments using Yjs (CRDT-based synchronization).
+A lightweight Node.js WebSocket + HTTP server that enables real-time collaborative editing for self-hosted draw.io embedded in Nextcloud.
 
-## Features
+## How It Works
 
-- **CRDT-based Synchronization**: Uses Yjs for conflict-free replicated data types
-- **WebSocket Protocol**: Efficient real-time communication
-- **Awareness Protocol**: Tracks presence of remote users
-- **Automatic Cleanup**: Removes inactive rooms to save resources
-- **Health Checks**: Built-in health and stats endpoints
-- **Room Management**: Each diagram gets its own isolated room
+draw.io's realtime protocol has two channels:
 
-## Architecture
+1. **HTTP `/cache`** — draw.io POSTs an AES-encrypted diagram snapshot after every save. Other clients GET this endpoint to poll for missed updates.
+2. **WebSocket `/rt`** — our custom relay channel. `PreConfig.js` (injected into draw.io) sends plain-text diagram XML here on every model change. The server broadcasts it to all other tabs in the same room.
 
-```
-Draw.io Client (WebSocket)
-    ↓
-Nginx Ingress (port 443, path /realtime)
-    ↓
-DrawIO-Realtime Service (port 8081)
-    ↓
-Node.js WebSocket Server (Yjs + lib0)
-```
+When a tab connects late, the server sends `room.lastXml` (the last plain XML it received) immediately on WebSocket open, so the tab instantly has the current diagram state without waiting for Nextcloud to push an update.
 
-## Building
+## Endpoints
 
-Build the Docker image:
+| Path | Protocol | Description |
+|---|---|---|
+| `/rt?id=<roomId>` | WebSocket | Real-time relay room |
+| `/cache` | HTTP POST | Store encrypted diagram snapshot |
+| `/cache?id=&sid=` | HTTP GET | Retrieve latest snapshot |
+| `/health` | HTTP GET | Liveness probe — returns `OK` |
+| `/stats` | HTTP GET | JSON: rooms, clients, uptime |
+| `/rooms` | HTTP GET | JSON: list of active rooms |
 
-```bash
-cd realtime-server
-docker build -t drawio-realtime:latest .
+## Message Format
+
+**Client → Server (WebSocket)**
+```json
+{ "type": "xml", "xml": "<mxGraphModel>...</mxGraphModel>" }
 ```
 
-## Kubernetes Deployment
+**Server → Client (WebSocket, broadcast)**
 
-The real-time server is deployed as part of the standard kustomization:
+Same `{type:"xml", xml:"..."}` object — all clients in the room except the sender receive it.
 
-```bash
-cd overlay/dev
-kubectl apply -k .
-```
+**Server → newly connected Client (WebSocket, initial state)**
 
-This creates:
-- `drawio-realtime` Deployment
-- `drawio-realtime` Service  
-- `realtime-ingress` Ingress (routes `/realtime` path)
+If `room.lastXml` exists: `{type:"xml", xml:"..."}` (plain, decoded immediately by client)
+Otherwise: `{msg:"<base64-encrypted>"}` (draw.io's HTTP cache, requires AES key the client holds)
 
-## API Endpoints
+## Room Lifecycle
 
-### WebSocket
-- `ws://host:8081/rt?id=<room-id>` - Real-time collaboration endpoint
-
-### HTTP
-- `GET /health` - Health check
-- `GET /stats` - Server statistics (JSON)
+- A room is created on first WebSocket connection or HTTP POST for a given `id`.
+- `room.lastXml` is updated every time a client sends a `{type:"xml"}` WebSocket message.
+- Rooms with no connected clients are garbage-collected after 5 minutes.
 
 ## Configuration
 
 | Environment Variable | Default | Description |
 |---|---|---|
-| `PORT` | 8081 | WebSocket server port |
+| `PORT` | `8081` | Listening port |
 
-## Client Integration
+## Building
 
-The draw.io client automatically detects the real-time server via the `/realtime-init.html` configuration that's injected into the page. The client will:
+```bash
+docker build -t registry.osalliance.com/drawio/drawio-realtime:vX.X.X .
+docker push registry.osalliance.com/drawio/drawio-realtime:vX.X.X
+```
 
-1. Detect the domain and protocol
-2. Connect to `wss://domain/realtime` (for HTTPS)
-3. Exchange document updates via Yjs protocol
-4. Sync awareness (user presence) information
+Update the image tag in `../base/realtime-server-deployment.yaml`, then apply:
 
-## Protocol
+```bash
+kubectl apply -f ../base/realtime-server-deployment.yaml
+```
 
-The server uses the Yjs synchronization protocol:
-
-- **Message Type 0**: Document updates (Y.encodeStateAsUpdate)
-- **Message Type 1**: Awareness updates (user presence, cursors, selections)
-
-Both are encoded using lib0's variable-length encoding for efficiency.
-
-## Troubleshooting
-
-### WebSocket Connection Failed
-- Ensure Ingress is configured to proxy `/realtime` path to the service
-- Check that `nginx.ingress.kubernetes.io/websocket-services` annotation includes proper timeout
-
-### No Real-time Sync
-- Check browser console for connection errors
-- Verify the real-time server pod is running: `kubectl get pods -n drawio-dev`
-- Check logs: `kubectl logs -f deployment/drawio-realtime -n drawio-dev`
-
-### Memory Issues
-- Monitor with: `kubectl top pods -n drawio-dev`
-- Inactive rooms are auto-cleaned after 5 minutes
-- Pod limits are set to 512Mi by default
-
-## Development
-
-Run locally with hot-reload:
+## Running Locally
 
 ```bash
 npm install
-npm run dev
+node server.js
 ```
 
-Then expose the WebSocket to draw.io (e.g., via ngrok or localhost port forwarding).
+The server listens on `0.0.0.0:8081`. For local testing with draw.io, use an ngrok tunnel or a port-forward:
+
+```bash
+kubectl port-forward service/drawio-realtime 8081:8081
+```
+
+## Kubernetes Resources
+
+| Resource | Value |
+|---|---|
+| Memory request | 128 Mi |
+| Memory limit | 512 Mi |
+| CPU request | 100 m |
+| CPU limit | 500 m |
+| Liveness probe | `GET /health` every 30 s |
+| Readiness probe | `GET /health` every 10 s |
 
 ## License
 
