@@ -6,7 +6,8 @@ data:
   drawio-config.json: |
     {
       "templateFile": "/templates/templates.xml",
-      "realtimeUrl": "https://drawio-dev.fairkom.net/cache"
+      "realtimeUrl": "https://drawio-dev.fairkom.net/cache",
+      "pusherKey": "local-rt"
     }
   templates.xml: |
     <?xml version="1.0" encoding="UTF-8"?>
@@ -19,39 +20,58 @@ data:
         libs="general;basic" />
     </templates>
   PreConfig.js: |
-    // draw.io PreConfig.js — real-time shim with enhanced debugging
+    // draw.io PreConfig.js — real-time collaboration shim (GDPR-compliant, no Pusher)
     (function () {
       'use strict';
 
-      if (window.__drawioRealtimeConfig) {
-        console.log('[DrawIO RT] Already configured');
-        return;
-      }
+      if (window.__drawioRealtimeConfig) return;
 
       const loc = window.location;
-      const wsProtocol = loc.protocol === 'https:' ? 'wss:' : 'ws:';
-      const WS_BASE = wsProtocol + '//' + loc.host + '/rt';
+      const WS_BASE  = (loc.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + loc.host + '/rt';
       const HTTP_BASE = loc.protocol + '//' + loc.host + '/cache';
 
-      window.__drawioRealtimeConfig = { enabled: true, wsBase: WS_BASE, httpBase: HTTP_BASE };
-      console.log('[DrawIO RT] Configured. WS:', WS_BASE, 'HTTP:', HTTP_BASE);
+      window.__drawioRealtimeConfig = { enabled: true };
+      console.log('[DrawIO RT] Configured. WS:', WS_BASE);
 
-      // --- Block Pusher CDN scripts ---
-      new MutationObserver(function (mutations) {
-        for (let i = 0; i < mutations.length; i++) {
-          const nodes = mutations[i].addedNodes;
-          for (let j = 0; j < nodes.length; j++) {
-            const node = nodes[j];
-            if (node.nodeName === 'SCRIPT' && node.src && node.src.includes('pusher.com')) {
-              node.remove();
-              console.log('[DrawIO RT] Blocked Pusher CDN script:', node.src);
+      // Capture draw.io's postMessage handlers (used as fallback when mxGraph API is not ready)
+      const _drawioMsgHandlers = [];
+      let _parentOrigin = null;
+      const _origAEL = window.addEventListener.bind(window);
+      window.addEventListener = function(type, handler, options) {
+        if (type === 'message' && typeof handler === 'function') _drawioMsgHandlers.push(handler);
+        return _origAEL(type, handler, options);
+      };
+      _origAEL('message', function(e) {
+        if (!_parentOrigin && e.origin && e.origin !== loc.origin) _parentOrigin = e.origin;
+      }, true);
+
+      var _applyingRemote = false;
+
+      // Block pusher.com CDN (GDPR) — intercept mxscript() loader
+      (function() {
+        function wrap(orig) {
+          return function(url, onload) {
+            if (typeof url === 'string' && url.includes('pusher.com')) {
+              if (typeof onload === 'function') setTimeout(onload, 0);
+              return;
             }
-          }
+            return orig.apply(this, arguments);
+          };
         }
-      }).observe(document.documentElement, { childList: true, subtree: true });
+        if (typeof window.mxscript === 'function') {
+          window.mxscript = wrap(window.mxscript);
+        } else {
+          let _fn;
+          Object.defineProperty(window, 'mxscript', {
+            get: function() { return _fn; },
+            set: function(fn) { _fn = wrap(fn); },
+            configurable: true, enumerable: true
+          });
+        }
+      })();
 
-      // --- Single global WebSocket management ---
-      const rooms = new Map(); // roomId -> { ws, channels: Set<PusherChannel> }
+      // WebSocket management: roomId -> { ws, channels: Set }
+      const rooms = new Map();
 
       function ensureWebSocket(roomId) {
         if (rooms.has(roomId)) return rooms.get(roomId).ws;
@@ -60,211 +80,297 @@ data:
         const roomState = { ws, channels: new Set() };
         rooms.set(roomId, roomState);
 
-        // Enhanced WebSocket message handler with detailed logging
         ws.addEventListener('message', (event) => {
           let raw;
-          try {
-            raw = JSON.parse(event.data);
-            console.log('[DrawIO RT] WS Message Received:', {
-              roomId: roomId,
-              timestamp: new Date().toISOString(),
-              dataLength: event.data.length,
-              parsed: raw
-            });
+          try { raw = JSON.parse(event.data); } catch(e) { return; }
+          if (!raw || typeof raw !== 'object') return;
 
-            // Verify message structure
-            if (!raw || typeof raw !== 'object') {
-              console.warn('[DrawIO RT] Invalid message structure:', raw);
-              return;
-            }
-
-            // Check for expected fields
-            if (!raw.msg && !raw.data) {
-              console.warn('[DrawIO RT] Message missing expected fields:', raw);
-            }
-
-            // Convert to Pusher client-event format
-            const pusherEvent = {
-              event: 'client-msg',
-              data: { msg: raw.msg || raw.data || raw }
-            };
-
-            console.log('[DrawIO RT] Converted to Pusher format:', pusherEvent);
-
-            // Dispatch to all channels in this room
-            for (const channel of roomState.channels) {
-              console.log('[DrawIO RT] Dispatching to channel:', channel._name, 'bindings:', Object.keys(channel._bindings));
-              for (const evName in channel._bindings) {
-                if (evName === 'client-msg' || evName === 'message') {
-                  const callbacks = channel._bindings[evName];
-                  console.log('[DrawIO RT] Calling', callbacks.length, 'callbacks for event', evName);
-                  for (const cb of callbacks) {
-                    try {
-                      cb(pusherEvent);
-                      console.log('[DrawIO RT] Callback executed successfully');
-                    } catch (e) {
-                      console.error('[DrawIO RT] Callback error:', e);
-                    }
-                  }
-                }
+          // Primary path: plain XML relay from another tab
+          if (raw.type === 'xml' && raw.xml && !_applyingRemote) {
+            var _g = (window.__drawioEditorUi && window.__drawioEditorUi.editor && window.__drawioEditorUi.editor.graph)
+                     || (window.graph && window.graph.model && window.graph);
+            if (_g && _g.model && typeof mxCodec !== 'undefined' && typeof mxUtils !== 'undefined') {
+              try {
+                var _doc = mxUtils.parseXml(raw.xml);
+                _applyingRemote = true;
+                _g.model.beginUpdate();
+                try { new mxCodec(_doc).decode(_doc.documentElement, _g.model); }
+                finally { _g.model.endUpdate(); }
+                setTimeout(function() { _applyingRemote = false; }, 1000);
+                console.log('[DrawIO RT] Applied remote XML (' + raw.xml.length + ' chars)');
+              } catch(e) {
+                _applyingRemote = false;
+                console.error('[DrawIO RT] Apply error:', e.message);
               }
+            } else if (_parentOrigin) {
+              // Fallback: postMessage injection when mxGraph API not yet available
+              _applyingRemote = true;
+              var fakeEvt = { type:'message', data: JSON.stringify({action:'merge', xml:raw.xml}),
+                              origin:_parentOrigin, source:window.parent, isTrusted:true };
+              _drawioMsgHandlers.forEach(function(h) { try { h(fakeEvt); } catch(e) {} });
+              setTimeout(function() { _applyingRemote = false; }, 1000);
             }
-          } catch (e) {
-            console.warn('[DrawIO RT] Bad WS message:', event.data);
+            return;
+          }
+
+          // Pusher channel dispatch (draw.io may bind events here in some configurations)
+          for (const channel of roomState.channels) {
+            const payload = raw.msg !== undefined ? raw : { msg: raw };
+            channel._buffer.push(payload);
+            if (channel._buffer.length > 10) channel._buffer.shift();
+            for (const evName of Object.keys(channel._bindings)) {
+              channel._bindings[evName].forEach(cb => { try { cb(payload); } catch(e) {} });
+            }
           }
         });
 
-        ws.addEventListener('open', () => {
-          console.log('[DrawIO RT] WebSocket OPEN for room', roomId);
-          console.log('[DrawIO RT] WebSocket state:', ws.readyState);
-        });
-
+        ws.addEventListener('open',  () => console.log('[DrawIO RT] WS open:', roomId));
         ws.addEventListener('close', (e) => {
-          console.warn('[DrawIO RT] WebSocket CLOSED for room', roomId, e.code, e.reason);
+          console.warn('[DrawIO RT] WS closed:', roomId, e.code);
           rooms.delete(roomId);
           setTimeout(() => ensureWebSocket(roomId), 3000);
         });
-
-        ws.addEventListener('error', (err) => {
-          console.error('[DrawIO RT] WebSocket ERROR for room', roomId, err);
-        });
+        ws.addEventListener('error', () => console.error('[DrawIO RT] WS error:', roomId));
 
         return ws;
       }
 
-      // --- Pusher Channel ---
-      function PusherChannel(name) {
-        this._name = name;
-        this._bindings = {};
-        this._roomId = name.replace(/^presence-/, '');
+      // BroadcastChannel: share roomId across same-origin tabs (best-effort, partitioned in Firefox)
+      let _bc = null;
+      try { _bc = new BroadcastChannel('drawio-rt'); } catch(e) {}
+
+      let _lastShim = null, _pendingRoomId = null;
+
+      function autoSubscribeRoom(roomId) {
+        if (!roomId) return;
+        if (!_lastShim) { _pendingRoomId = roomId; return; }
+        const ch = 'presence-' + roomId;
+        if (!_lastShim._channels[ch]) _lastShim.subscribe(ch);
       }
 
-      PusherChannel.prototype.bind = function (ev, cb) {
-        console.log('[DrawIO RT] bind("' + ev + '") on channel "' + this._name + '"');
+      if (_bc) _bc.onmessage = function(e) {
+        if (e.data && e.data.type === 'roomId') autoSubscribeRoom(e.data.roomId);
+      };
+
+      // Pusher channel stub
+      function PusherChannel(name) {
+        this._name     = name;
+        this._bindings = {};
+        this._buffer   = [];
+        this._roomId   = name.replace(/^presence-/, '');
+        this._subscribed = false;
+      }
+      PusherChannel.prototype.bind = function(ev, cb) {
         if (!this._bindings[ev]) this._bindings[ev] = [];
         this._bindings[ev].push(cb);
+        if (ev === 'pusher:subscription_succeeded' && this._subscribed)
+          setTimeout(function() { try { cb({count:1,me:{id:'local',info:{}},members:{}}); } catch(e) {} }, 0);
+        if (ev !== 'pusher:subscription_succeeded' && this._buffer.length)
+          this._buffer.forEach(function(p) { try { cb(p); } catch(e) {} });
         return this;
       };
-
-      PusherChannel.prototype.unbind = function (ev, cb) {
-        if (cb && this._bindings[ev]) {
-          this._bindings[ev] = this._bindings[ev].filter(f => f !== cb);
-        } else {
-          delete this._bindings[ev];
-        }
+      PusherChannel.prototype.unbind = function(ev, cb) {
+        if (cb && this._bindings[ev]) this._bindings[ev] = this._bindings[ev].filter(f => f !== cb);
+        else delete this._bindings[ev];
         return this;
       };
+      PusherChannel.prototype.trigger = function() {};
 
-      PusherChannel.prototype.trigger = function (ev, data) {
-        console.log('[DrawIO RT] channel.trigger (ignored)', ev, data);
-      };
-
-      // --- Pusher Shim ---
-      function PusherShim(appKey, opts) {
-        console.log('[DrawIO RT] new Pusher() – shim active, key:', appKey);
+      // Pusher shim
+      function PusherShim() {
         this._channels = {};
         this._connCallbacks = {};
-        this.sessionID = 'local-' + Math.random().toString(36).slice(2);
+        this.sessionID = String(Math.random() * 1e5 | 0) + '.' + String(Math.random() * 1e5 | 0);
+        _lastShim = this;
+
+        setTimeout(() => {
+          let roomId = _pendingRoomId; _pendingRoomId = null;
+          if (!roomId) try { roomId = localStorage.getItem('drawio-rt-roomId'); } catch(e) {}
+          if (roomId) autoSubscribeRoom(roomId);
+        }, 100);
 
         const self = this;
         this.connection = {
-          state: 'initialized',
-          bind: function (ev, cb) {
+          state: 'connected', socket_id: this.sessionID,
+          bind: function(ev, cb) {
             if (!self._connCallbacks[ev]) self._connCallbacks[ev] = [];
             self._connCallbacks[ev].push(cb);
-            if (ev === 'connected') {
-              setTimeout(() => cb({ socket_id: self.sessionID }), 0);
+            if (ev === 'connected')    setTimeout(() => cb({ socket_id: self.sessionID }), 0);
+            if (ev === 'state_change') {
+              setTimeout(() => cb({ current:'connecting', previous:'initialized' }), 0);
+              setTimeout(() => cb({ current:'connected',  previous:'connecting'   }), 200);
             }
+          },
+          unbind: function(ev, cb) {
+            if (!ev) { self._connCallbacks = {}; return; }
+            if (cb && self._connCallbacks[ev])
+              self._connCallbacks[ev] = self._connCallbacks[ev].filter(f => f !== cb);
+            else delete self._connCallbacks[ev];
           }
         };
       }
-
-      PusherShim.prototype.subscribe = function (channelName) {
-        console.log('[DrawIO RT] subscribe("' + channelName + '")');
-        if (!this._channels[channelName]) {
-          this._channels[channelName] = new PusherChannel(channelName);
-        }
+      PusherShim.prototype.subscribe = function(channelName) {
+        if (!this._channels[channelName]) this._channels[channelName] = new PusherChannel(channelName);
         const channel = this._channels[channelName];
-        const roomId = channel._roomId;
-
-        // Ensure WebSocket exists and register this channel
-        const roomState = rooms.get(roomId);
-        if (roomState) {
-          roomState.channels.add(channel);
-        } else {
-          const ws = ensureWebSocket(roomId);
-          const newState = rooms.get(roomId);
-          newState.channels.add(channel);
-        }
-
-        // Return channel with unbind method for compatibility
-        channel.unbind = function(event, callback) {
-          console.log('[DrawIO RT] Channel unbind called for event:', event);
-          if (callback && channel._bindings && channel._bindings[event]) {
-            channel._bindings[event] = channel._bindings[event].filter(function(cb) { return cb !== callback; });
-          } else if (channel._bindings && channel._bindings[event]) {
-            delete channel._bindings[event];
-          }
-          return channel;
-        };
+        if (!rooms.has(channel._roomId)) ensureWebSocket(channel._roomId);
+        rooms.get(channel._roomId).channels.add(channel);
+        setTimeout(() => {
+          channel._subscribed = true;
+          (channel._bindings['pusher:subscription_succeeded'] || [])
+            .forEach(cb => { try { cb({count:1,me:{id:'local',info:{}},members:{}}); } catch(e) {} });
+        }, 300);
         return channel;
       };
-
-      PusherShim.prototype.unsubscribe = function (channelName) {
-        const channel = this._channels[channelName];
-        if (channel) {
-          const roomState = rooms.get(channel._roomId);
-          if (roomState) roomState.channels.delete(channel);
-          delete this._channels[channelName];
-        }
+      PusherShim.prototype.channel     = function(n) { return this._channels[n] || null; };
+      PusherShim.prototype.allChannels = function()  { return Object.values(this._channels); };
+      PusherShim.prototype.bind_global = function(cb) { (this._globalCbs = this._globalCbs || []).push(cb); return this; };
+      PusherShim.prototype.unsubscribe = function(channelName) {
+        const ch = this._channels[channelName];
+        if (ch) { const rs = rooms.get(ch._roomId); if (rs) rs.channels.delete(ch); delete this._channels[channelName]; }
+      };
+      PusherShim.prototype.disconnect = function() {
+        for (const [id, st] of rooms.entries()) { if (st.ws) st.ws.close(); rooms.delete(id); }
       };
 
-      PusherShim.prototype.disconnect = function () {
-        for (const roomId of rooms.keys()) {
-          const state = rooms.get(roomId);
-          if (state.ws) state.ws.close();
-          rooms.delete(roomId);
-        }
-      };
-
-      // --- Lock window.Pusher ---
       try {
         Object.defineProperty(window, 'Pusher', {
-          value: PusherShim,
-          writable: false,
-          configurable: false,
-          enumerable: true
+          get: function() { return PusherShim; }, set: function() {},
+          configurable: false, enumerable: true
         });
-        console.log('[DrawIO RT] window.Pusher locked');
-      } catch (e) {
-        window.Pusher = PusherShim;
-        console.warn('[DrawIO RT] window.Pusher set (not locked):', e);
-      }
+      } catch(e) { window.Pusher = PusherShim; }
 
-      // --- Redirect /cache fetch and XHR ---
+      // Redirect /cache fetch (GDPR: no pusher.com)
       const _fetch = window.fetch.bind(window);
-      window.fetch = function (input, init) {
-        let url = typeof input === 'string' ? input : (input instanceof Request ? input.url : String(input));
+      window.fetch = function(input, init) {
+        const url = typeof input === 'string' ? input : (input instanceof Request ? input.url : String(input));
         if (url.includes('pusher.com')) return Promise.reject(new Error('Pusher CDN blocked'));
         if (/\/cache(\?|$)/.test(url)) {
           const dst = HTTP_BASE + new URL(url, loc.href).search;
-          console.log('[DrawIO RT] fetch /cache ->', dst);
           return _fetch(typeof input === 'string' ? dst : new Request(dst, input), init);
         }
         return _fetch(input, init);
       };
 
+      // Redirect /cache XHR + extract roomId from POST body
       const _open = XMLHttpRequest.prototype.open;
-      XMLHttpRequest.prototype.open = function (method, url) {
+      const _xhrSend = XMLHttpRequest.prototype.send;
+      XMLHttpRequest.prototype.open = function(method, url) {
         const args = Array.prototype.slice.call(arguments);
         if (typeof url === 'string' && /\/cache(\?|$)/.test(url)) {
-          try {
-            args[1] = HTTP_BASE + new URL(url, loc.href).search;
-            console.log('[DrawIO RT] XHR /cache ->', args[1]);
-          } catch (_) {}
+          try { args[1] = HTTP_BASE + new URL(url, loc.href).search; this._rtMethod = method; } catch(_) {}
         }
         return _open.apply(this, args);
       };
+      XMLHttpRequest.prototype.send = function(body) {
+        if (this._rtMethod === 'POST' && typeof body === 'string') {
+          try {
+            const roomId = new URLSearchParams(body).get('id');
+            if (roomId) {
+              try { localStorage.setItem('drawio-rt-roomId', roomId); } catch(e) {}
+              autoSubscribeRoom(roomId);
+              if (_bc) _bc.postMessage({ type:'roomId', roomId });
+            }
+          } catch(e) {}
+        }
+        return _xhrSend.apply(this, arguments);
+      };
 
-      console.log('[DrawIO RT] Setup complete');
+      // Re-search for graph after diagram loads
+      _origAEL('message', function(e) {
+        try {
+          const msg = typeof e.data === 'string' ? JSON.parse(e.data) : e.data;
+          if (msg && msg.action === 'load') setTimeout(attachModelListener, 1000);
+        } catch(ex) {}
+      });
+
+      // Capture EditorUi instance via prototype patch
+      function patchEditorUi() {
+        const cls = window.EditorUi;
+        if (!cls || !cls.prototype || cls.prototype._rtPatched) return !!window.__drawioEditorUi;
+        cls.prototype._rtPatched = true;
+        const _orig = cls.prototype.init || function(){};
+        cls.prototype.init = function() {
+          const r = _orig.apply(this, arguments);
+          if (!window.__drawioEditorUi) window.__drawioEditorUi = this;
+          return r;
+        };
+        return !!window.__drawioEditorUi;
+      }
+
+      // Attach model change listener and relay updates via WebSocket
+      function attachModelListener() {
+        let graph = window.__drawioEditorUi && window.__drawioEditorUi.editor && window.__drawioEditorUi.editor.graph;
+
+        if (!graph && window.graph && window.graph.model) graph = window.graph;
+
+        if (!graph) {
+          for (const k of ['app','App','ui','editor','drawio','editorUi','diagramEditor']) {
+            const c = window[k];
+            if (c && c.editor && c.editor.graph && c.editor.graph.model) {
+              window.__drawioEditorUi = c; graph = c.editor.graph; break;
+            }
+          }
+        }
+
+        if (!graph) {
+          try {
+            for (const k of Object.keys(window)) {
+              if (graph || k.length < 3 || /^(on|webkit|moz|ms|__)/i.test(k)) continue;
+              try {
+                const v = window[k];
+                if (v && typeof v === 'object' && !Array.isArray(v) && !(v instanceof Element) &&
+                    v.editor && v.editor.graph && v.editor.graph.model &&
+                    typeof v.editor.graph.model.addListener === 'function') {
+                  window.__drawioEditorUi = v; graph = v.editor.graph;
+                }
+              } catch(e) {}
+            }
+          } catch(e) {}
+        }
+
+        if (!graph || !graph.model) return false;
+        if (graph.model._rtListenerAttached) return true;
+        graph.model._rtListenerAttached = true;
+
+        let _relayTimer = null;
+        function scheduleRelay() {
+          if (_applyingRemote) return;
+          clearTimeout(_relayTimer);
+          _relayTimer = setTimeout(function() {
+            try {
+              if (typeof mxCodec === 'undefined' || typeof mxUtils === 'undefined') return;
+              const xml = mxUtils.getXml(new mxCodec().encode(graph.model));
+              if (!xml || xml.length < 10) return;
+              // Find an open WebSocket — prefer room stored in localStorage
+              let ws = null;
+              try {
+                const roomId = localStorage.getItem('drawio-rt-roomId');
+                if (roomId && rooms.has(roomId)) ws = rooms.get(roomId).ws;
+              } catch(e) {}
+              if (!ws || ws.readyState !== 1) {
+                for (const rs of rooms.values()) {
+                  if (rs.ws && rs.ws.readyState === 1) { ws = rs.ws; break; }
+                }
+              }
+              if (ws && ws.readyState === 1) {
+                ws.send(JSON.stringify({ type:'xml', xml }));
+                console.log('[DrawIO RT] Sent XML (' + xml.length + ' chars)');
+              }
+            } catch(e) {}
+          }, 300);
+        }
+
+        graph.model.addListener('change', scheduleRelay);
+        graph.model.addListener('endUpdate', function(sender, evt) {
+          const edit = evt && evt.getProperty && evt.getProperty('edit');
+          if (edit && edit.changes && edit.changes.length > 0) scheduleRelay();
+        });
+        console.log('[DrawIO RT] Ready');
+        return true;
+      }
+
+      (function poll() {
+        patchEditorUi();
+        if (!attachModelListener()) setTimeout(poll, 500);
+      })();
     })();

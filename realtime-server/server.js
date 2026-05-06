@@ -13,6 +13,7 @@ class Room {
     this.clients = new Set();
     this.updates = []; // Track update history with version IDs
     this.updateCount = 0; // Sequential counter for update versions
+    this.lastXml = null; // Last plain XML from WS relay — sent to late-joining clients
     this.createdAt = Date.now();
   }
 
@@ -36,17 +37,11 @@ class Room {
   }
 
   getUpdatesSince(lastSeenId) {
-    if (lastSeenId === undefined || lastSeenId === null) {
-      // Return only the latest update if no lastSeenId
-      const latest = room.updates.length ? [room.updates[room.updates.length - 1]] : [];
-      res.end(JSON.stringify(latest.length ? latest[0] : {})); // single object, not array
-    } else {
-      res.end(JSON.stringify(room.getUpdatesSince(lastSeenId)));
+    if (lastSeenId === null || lastSeenId === undefined) {
+      return this.updates.length > 0 ? [this.updates[this.updates.length - 1]] : [];
     }
-    
-    // Return all updates after lastSeenId
     const newUpdates = this.updates.filter(u => u.id > lastSeenId);
-    console.log(`[${new Date().toISOString()}] [POLL] Client polling lastSeenId=${lastSeenId}, returning ${newUpdates.length} new updates`);
+    console.log(`[${new Date().toISOString()}] [POLL] Returning ${newUpdates.length} updates since #${lastSeenId}`);
     return newUpdates;
   }
 
@@ -111,35 +106,40 @@ function handleWebSocket(ws, req) {
   ws.clientId = clientId;
   ws.roomId = roomId;
 
-  // Send last update to newly connected client with all metadata
-  if (room.updates.length > 0) {
-    try {
+  // Send last known state to the newly connected client.
+  // Prefer plain XML (from a previous WS relay) — clients can apply it directly.
+  // Fall back to the encrypted HTTP-cache blob only when no plain XML is available.
+  try {
+    if (room.lastXml) {
+      ws.send(JSON.stringify({ type: 'xml', xml: room.lastXml }));
+      console.log(`[${new Date().toISOString()}] [WS-SEND] Sent lastXml (${room.lastXml.length} chars) to new client in room ${roomId}`);
+    } else if (room.updates.length > 0) {
       const lastUpdate = room.updates[room.updates.length - 1];
-      const wsMessage = JSON.stringify({
-        msg: lastUpdate.msg
-      });
-      ws.send(wsMessage);
-      console.log(`[${new Date().toISOString()}] [WS-SEND] Sent cached update #${lastUpdate.id} with metadata to new client in room ${roomId}`);
-    } catch (error) {
-      console.error(`[${new Date().toISOString()}] [WS-ERROR] Error sending cached update:`, error.message);
+      ws.send(JSON.stringify({ msg: lastUpdate.msg }));
+      console.log(`[${new Date().toISOString()}] [WS-SEND] Sent cached encrypted update #${lastUpdate.id} to new client in room ${roomId}`);
     }
+  } catch (error) {
+    console.error(`[${new Date().toISOString()}] [WS-ERROR] Error sending initial state:`, error.message);
   }
 
-   // Handle incoming WebSocket messages
+  // Handle incoming WebSocket messages
   ws.on('message', (data) => {
     try {
-      console.log(`[${new Date().toISOString()}] [${ws.clientId}] [WS-MSG-IN] Received message from client in room ${roomId} (${data.length} bytes)`);
-      
-      // Log message content for debugging
-      if (typeof data === 'string') {
-        console.log(`[${new Date().toISOString()}] [${ws.clientId}] [WS-MSG-IN] Text message:`, data.slice(0, 200));
-      } else {
-        console.log(`[${new Date().toISOString()}] [${ws.clientId}] [WS-MSG-IN] Binary message (first 20 bytes):`, Array.from(new Uint8Array(data.slice(0, 20))));
-      }
-      
+      const dataStr = typeof data === 'string' ? data : data.toString();
+      console.log(`[${new Date().toISOString()}] [${ws.clientId}] [WS-MSG-IN] ${dataStr.length} bytes: ${dataStr.slice(0, 120)}`);
+
+      // Cache plain XML relays so late-joining clients get the latest diagram state
+      try {
+        const parsed = JSON.parse(dataStr);
+        if (parsed && parsed.type === 'xml' && typeof parsed.xml === 'string') {
+          room.lastXml = parsed.xml;
+          console.log(`[${new Date().toISOString()}] [${ws.clientId}] [WS-XML] Cached plain XML (${parsed.xml.length} chars) for room ${roomId}`);
+        }
+      } catch (_) {}
+
       // Broadcast to other clients
-      room.broadcast(data, ws);
-      console.log(`[${new Date().toISOString()}] [${ws.clientId}] [WS-MSG-OUT] Broadcasted message to ${room.clients.size - 1} other clients`);
+      room.broadcast(dataStr, ws);
+      console.log(`[${new Date().toISOString()}] [${ws.clientId}] [WS-MSG-OUT] Broadcasted to ${room.clients.size - 1} other clients`);
     } catch (error) {
       console.error(`[${new Date().toISOString()}] [${ws.clientId}] [WS-MSG-ERROR] Error handling message:`, error.message);
       console.error(`[${new Date().toISOString()}] [${ws.clientId}] [WS-MSG-ERROR] Stack:`, error.stack);
@@ -260,12 +260,12 @@ function handleRequest(req, res) {
         }
       });
     } else if (req.method === 'GET') {
-      // GET /cache?id=roomId&lastId=X - retrieve cached updates for polling clients
+      // GET /cache?id=roomId&sid=mySid - poll for latest update from other clients
       const queryParams = new URL(`http://${req.headers.host}${req.url}`).searchParams;
       const roomId = queryParams.get('id');
-      const lastId = queryParams.get('lastId') ? parseInt(queryParams.get('lastId')) : null;
+      const requestingSid = queryParams.get('sid'); // client's own session ID
 
-      console.log(`[${new Date().toISOString()}] [GET /cache] roomId=${roomId}, lastId=${lastId}`);
+      console.log(`[${new Date().toISOString()}] [GET /cache] roomId=${roomId}, requestingSid=${requestingSid}`);
 
       if (!roomId) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -274,25 +274,23 @@ function handleRequest(req, res) {
       }
 
       const room = getOrCreateRoom(roomId);
-      const newUpdates = room.getUpdatesSince(lastId);
 
-      if (newUpdates.length > 0) {
-        // Return ALL new updates, not just the latest
-        const updates = newUpdates.map(u => ({
-          id: u.id,
-          msg: u.msg,
-          sid: u.sid,
-          timestamp: u.timestamp
-        }));
-        
-        console.log(`[${new Date().toISOString()}] [GET /cache] Returning ${updates.length} new updates for room ${roomId}`);
-        
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(updates));
+      // Return the latest update not sent by this client (draw.io filters by sid client-side too)
+      let latestUpdate = null;
+      for (let i = room.updates.length - 1; i >= 0; i--) {
+        if (!requestingSid || room.updates[i].sid !== requestingSid) {
+          latestUpdate = room.updates[i];
+          break;
+        }
+      }
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      if (latestUpdate) {
+        console.log(`[${new Date().toISOString()}] [GET /cache] Returning update #${latestUpdate.id} (sid=${latestUpdate.sid}) for room ${roomId}`);
+        res.end(JSON.stringify({ msg: latestUpdate.msg, sid: latestUpdate.sid, id: roomId }));
       } else {
-        console.log(`[${new Date().toISOString()}] [GET /cache] No updates since ${lastId} for room ${roomId}`);
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify([]));
+        console.log(`[${new Date().toISOString()}] [GET /cache] No new updates for room ${roomId}`);
+        res.end(JSON.stringify({}));
       }
     } else {
       res.writeHead(200, { 'Content-Type': 'application/json' });
