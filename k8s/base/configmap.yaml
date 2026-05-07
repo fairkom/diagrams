@@ -70,6 +70,170 @@ data:
         document.addEventListener('pointerleave', function() { if (typeof window._rtOnLeave === 'function') window._rtOnLeave(); }, true);
       })();
 
+      // Splash screen — replaces the default "Flowchart Maker..." browser title text with a
+      // branded loading screen. Fades out once the mxGraph canvas is fully ready.
+      (function() {
+        // Inline SVG diagrams — no external image requests (GDPR-safe)
+        var _SVG_FLOW =
+          '<svg width="170" height="205" viewBox="0 0 170 205" xmlns="http://www.w3.org/2000/svg">' +
+          '<defs><marker id="_rtSplA" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto">' +
+          '<path d="M0,0 L0,6 L7,3 Z" fill="#94a3b8"/></marker></defs>' +
+          '<ellipse cx="85" cy="18" rx="42" ry="15" fill="#3b82f6"/>' +
+          '<text x="85" y="23" text-anchor="middle" fill="white" font-size="11" font-family="Arial,sans-serif">Start</text>' +
+          '<line x1="85" y1="33" x2="85" y2="51" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#_rtSplA)"/>' +
+          '<rect x="20" y="51" width="130" height="32" rx="6" fill="#f1f5f9" stroke="#cbd5e1" stroke-width="1.5"/>' +
+          '<text x="85" y="72" text-anchor="middle" fill="#334155" font-size="10" font-family="Arial,sans-serif">Process data</text>' +
+          '<line x1="85" y1="83" x2="85" y2="101" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#_rtSplA)"/>' +
+          '<polygon points="85,101 132,125 85,149 38,125" fill="#f59e0b" stroke="#d97706" stroke-width="1.5"/>' +
+          '<text x="85" y="129" text-anchor="middle" fill="white" font-size="9" font-family="Arial,sans-serif">Valid?</text>' +
+          '<line x1="85" y1="149" x2="85" y2="167" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#_rtSplA)"/>' +
+          '<text x="92" y="163" fill="#94a3b8" font-size="8" font-family="Arial,sans-serif">Yes</text>' +
+          '<ellipse cx="85" cy="181" rx="42" ry="15" fill="#22c55e"/>' +
+          '<text x="85" y="186" text-anchor="middle" fill="white" font-size="11" font-family="Arial,sans-serif">Done</text>' +
+          '<path d="M132,125 L154,125 L154,67 L150,67" stroke="#94a3b8" stroke-width="1.5" fill="none" marker-end="url(#_rtSplA)"/>' +
+          '<text x="136" y="121" fill="#94a3b8" font-size="8" font-family="Arial,sans-serif">No</text>' +
+          '</svg>';
+
+        var _SVG_KANBAN =
+          '<svg width="215" height="158" viewBox="0 0 215 158" xmlns="http://www.w3.org/2000/svg">' +
+          '<rect x="3" y="3" width="64" height="152" rx="8" fill="#f1f5f9"/>' +
+          '<rect x="75" y="3" width="64" height="152" rx="8" fill="#f1f5f9"/>' +
+          '<rect x="147" y="3" width="64" height="152" rx="8" fill="#f1f5f9"/>' +
+          '<rect x="3" y="3" width="64" height="28" rx="8" fill="#64748b"/>' +
+          '<rect x="3" y="19" width="64" height="12" fill="#64748b"/>' +
+          '<text x="35" y="22" text-anchor="middle" fill="white" font-size="10" font-family="Arial,sans-serif">To Do</text>' +
+          '<rect x="75" y="3" width="64" height="28" rx="8" fill="#3b82f6"/>' +
+          '<rect x="75" y="19" width="64" height="12" fill="#3b82f6"/>' +
+          '<text x="107" y="22" text-anchor="middle" fill="white" font-size="9" font-family="Arial,sans-serif">In Progress</text>' +
+          '<rect x="147" y="3" width="64" height="28" rx="8" fill="#22c55e"/>' +
+          '<rect x="147" y="19" width="64" height="12" fill="#22c55e"/>' +
+          '<text x="179" y="22" text-anchor="middle" fill="white" font-size="10" font-family="Arial,sans-serif">Done</text>' +
+          '<rect x="8" y="36" width="54" height="28" rx="4" fill="white" stroke="#e2e8f0" stroke-width="1"/>' +
+          '<text x="35" y="54" text-anchor="middle" fill="#334155" font-size="8" font-family="Arial,sans-serif">Design UI</text>' +
+          '<rect x="8" y="69" width="54" height="28" rx="4" fill="white" stroke="#e2e8f0" stroke-width="1"/>' +
+          '<text x="35" y="87" text-anchor="middle" fill="#334155" font-size="8" font-family="Arial,sans-serif">Write tests</text>' +
+          '<rect x="8" y="102" width="54" height="28" rx="4" fill="white" stroke="#e2e8f0" stroke-width="1"/>' +
+          '<text x="35" y="120" text-anchor="middle" fill="#334155" font-size="8" font-family="Arial,sans-serif">API docs</text>' +
+          '<rect x="80" y="36" width="54" height="28" rx="4" fill="white" stroke="#93c5fd" stroke-width="1.5"/>' +
+          '<text x="107" y="54" text-anchor="middle" fill="#334155" font-size="8" font-family="Arial,sans-serif">Auth module</text>' +
+          '<rect x="80" y="69" width="54" height="28" rx="4" fill="white" stroke="#e2e8f0" stroke-width="1"/>' +
+          '<text x="107" y="87" text-anchor="middle" fill="#334155" font-size="8" font-family="Arial,sans-serif">Deploy</text>' +
+          '<rect x="152" y="36" width="54" height="28" rx="4" fill="white" stroke="#e2e8f0" stroke-width="1"/>' +
+          '<text x="179" y="54" text-anchor="middle" fill="#334155" font-size="8" font-family="Arial,sans-serif">Database</text>' +
+          '<rect x="152" y="69" width="54" height="28" rx="4" fill="white" stroke="#e2e8f0" stroke-width="1"/>' +
+          '<text x="179" y="87" text-anchor="middle" fill="#334155" font-size="8" font-family="Arial,sans-serif">Login page</text>' +
+          '<rect x="152" y="102" width="54" height="28" rx="4" fill="white" stroke="#e2e8f0" stroke-width="1"/>' +
+          '<text x="179" y="120" text-anchor="middle" fill="#334155" font-size="8" font-family="Arial,sans-serif">User model</text>' +
+          '<text x="197" y="49" fill="#22c55e" font-size="13" font-family="Arial,sans-serif">&#10003;</text>' +
+          '<text x="197" y="82" fill="#22c55e" font-size="13" font-family="Arial,sans-serif">&#10003;</text>' +
+          '<text x="197" y="115" fill="#22c55e" font-size="13" font-family="Arial,sans-serif">&#10003;</text>' +
+          '</svg>';
+
+        var _SVG_NET =
+          '<svg width="190" height="162" viewBox="0 0 190 162" xmlns="http://www.w3.org/2000/svg">' +
+          '<defs><marker id="_rtSplN" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto">' +
+          '<path d="M0,0 L0,6 L7,3 Z" fill="#94a3b8"/></marker></defs>' +
+          '<circle cx="28" cy="26" r="22" fill="#eff6ff" stroke="#3b82f6" stroke-width="1.5"/>' +
+          '<text x="28" y="23" text-anchor="middle" fill="#334155" font-size="7" font-family="Arial,sans-serif">User</text>' +
+          '<text x="28" y="34" text-anchor="middle" fill="#334155" font-size="7" font-family="Arial,sans-serif">Browser</text>' +
+          '<circle cx="162" cy="26" r="22" fill="#eff6ff" stroke="#3b82f6" stroke-width="1.5"/>' +
+          '<text x="162" y="23" text-anchor="middle" fill="#334155" font-size="7" font-family="Arial,sans-serif">User</text>' +
+          '<text x="162" y="34" text-anchor="middle" fill="#334155" font-size="7" font-family="Arial,sans-serif">Mobile</text>' +
+          '<rect x="63" y="10" width="64" height="32" rx="7" fill="#f59e0b" stroke="#d97706" stroke-width="1.5"/>' +
+          '<text x="95" y="30" text-anchor="middle" fill="white" font-size="9" font-family="Arial,sans-serif">API Gateway</text>' +
+          '<line x1="49" y1="22" x2="63" y2="22" stroke="#94a3b8" stroke-width="1.2" stroke-dasharray="4,2"/>' +
+          '<line x1="141" y1="22" x2="127" y2="22" stroke="#94a3b8" stroke-width="1.2" stroke-dasharray="4,2"/>' +
+          '<rect x="15" y="62" width="66" height="30" rx="7" fill="#3b82f6" stroke="#2563eb" stroke-width="1.5"/>' +
+          '<text x="48" y="81" text-anchor="middle" fill="white" font-size="9" font-family="Arial,sans-serif">App Server</text>' +
+          '<rect x="109" y="62" width="66" height="30" rx="7" fill="#3b82f6" stroke="#2563eb" stroke-width="1.5"/>' +
+          '<text x="142" y="81" text-anchor="middle" fill="white" font-size="9" font-family="Arial,sans-serif">App Server</text>' +
+          '<line x1="82" y1="42" x2="52" y2="62" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#_rtSplN)"/>' +
+          '<line x1="108" y1="42" x2="138" y2="62" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#_rtSplN)"/>' +
+          '<ellipse cx="95" cy="150" rx="35" ry="11" fill="#9333ea" stroke="#7e22ce" stroke-width="1.5"/>' +
+          '<ellipse cx="95" cy="136" rx="35" ry="11" fill="#9333ea" stroke="#7e22ce" stroke-width="1.5"/>' +
+          '<rect x="60" y="136" width="70" height="14" fill="#9333ea"/>' +
+          '<line x1="60" y1="136" x2="60" y2="150" stroke="#7e22ce" stroke-width="1.5"/>' +
+          '<line x1="130" y1="136" x2="130" y2="150" stroke="#7e22ce" stroke-width="1.5"/>' +
+          '<text x="95" y="147" text-anchor="middle" fill="white" font-size="8" font-family="Arial,sans-serif">PostgreSQL</text>' +
+          '<line x1="48" y1="92" x2="72" y2="130" stroke="#94a3b8" stroke-width="1.5"/>' +
+          '<line x1="142" y1="92" x2="118" y2="130" stroke="#94a3b8" stroke-width="1.5"/>' +
+          '<rect x="152" y="108" width="36" height="22" rx="5" fill="#ef4444" stroke="#dc2626" stroke-width="1.5"/>' +
+          '<text x="170" y="123" text-anchor="middle" fill="white" font-size="8" font-family="Arial,sans-serif">Redis</text>' +
+          '<line x1="155" y1="92" x2="163" y2="108" stroke="#94a3b8" stroke-width="1.2" stroke-dasharray="3,2"/>' +
+          '</svg>';
+
+        function buildSplash() {
+          if (document.getElementById('_rtSplash')) return;
+          var css = document.createElement('style');
+          css.id  = '_rtSplashCss';
+          css.textContent =
+            '#_rtSplash{position:fixed;inset:0;z-index:2147483645;' +
+              'background:linear-gradient(145deg,#ffffff 0%,#eaf4fd 55%,#f0fdf4 100%);' +
+              'display:flex;flex-direction:column;align-items:center;justify-content:center;' +
+              'font-family:"Segoe UI",system-ui,Arial,sans-serif;' +
+              'opacity:1;transition:opacity .75s ease}' +
+            '#_rtSplash._rtSplOut{opacity:0;pointer-events:none}' +
+            '#_rtSplTitle{font:300 clamp(20px,3.5vw,36px)/1.2 inherit;color:#1e293b;' +
+              'letter-spacing:.05em;margin:0 0 36px;' +
+              'animation:_rtSplFd .9s ease-out both}' +
+            '#_rtSplTitle strong{font-weight:700;color:#3b82f6}' +
+            '._rtSplCards{display:flex;gap:26px;align-items:flex-start;' +
+              'flex-wrap:wrap;justify-content:center;max-width:760px;padding:0 20px}' +
+            '._rtSplCard{background:white;border-radius:14px;' +
+              'box-shadow:0 4px 28px rgba(0,0,0,.09),0 1px 4px rgba(0,0,0,.05);' +
+              'padding:18px;opacity:0;animation:_rtSplUp .8s ease-out forwards}' +
+            '._rtSplCard:nth-child(1){animation-delay:.2s}' +
+            '._rtSplCard:nth-child(2){animation-delay:.4s}' +
+            '._rtSplCard:nth-child(3){animation-delay:.6s}' +
+            '._rtSplDots{display:flex;gap:9px;margin-top:40px;' +
+              'animation:_rtSplFd .9s .9s ease-out both}' +
+            '._rtSplDot{width:8px;height:8px;border-radius:50%;background:#3b82f6;' +
+              'animation:_rtSplBnc 1.4s infinite ease-in-out}' +
+            '._rtSplDot:nth-child(2){animation-delay:.25s}' +
+            '._rtSplDot:nth-child(3){animation-delay:.5s}' +
+            '@keyframes _rtSplFd{from{opacity:0;transform:translateY(-18px)}to{opacity:1;transform:translateY(0)}}' +
+            '@keyframes _rtSplUp{from{opacity:0;transform:translateY(24px)}to{opacity:1;transform:translateY(0)}}' +
+            '@keyframes _rtSplBnc{0%,80%,100%{transform:scale(.5);opacity:.3}40%{transform:scale(1);opacity:1}}';
+          document.head.appendChild(css);
+
+          var el = document.createElement('div');
+          el.id = '_rtSplash';
+          el.innerHTML =
+            '<div id="_rtSplTitle">diagramming <strong>together</strong></div>' +
+            '<div class="_rtSplCards">' +
+              '<div class="_rtSplCard">' + _SVG_FLOW   + '</div>' +
+              '<div class="_rtSplCard">' + _SVG_KANBAN + '</div>' +
+              '<div class="_rtSplCard">' + _SVG_NET    + '</div>' +
+            '</div>' +
+            '<div class="_rtSplDots">' +
+              '<div class="_rtSplDot"></div>' +
+              '<div class="_rtSplDot"></div>' +
+              '<div class="_rtSplDot"></div>' +
+            '</div>';
+          document.body.appendChild(el);
+        }
+
+        window._rtHideSplash = function() {
+          var el = document.getElementById('_rtSplash');
+          if (!el || el._hiding) return;
+          el._hiding = true;
+          el.classList.add('_rtSplOut');
+          setTimeout(function() {
+            if (el.parentNode) el.parentNode.removeChild(el);
+            var css = document.getElementById('_rtSplashCss');
+            if (css && css.parentNode) css.parentNode.removeChild(css);
+          }, 800);
+        };
+
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', buildSplash);
+        } else {
+          buildSplash();
+        }
+        // Safety net: hide after 12 s even if draw.io init fails
+        setTimeout(function() { if (typeof window._rtHideSplash === 'function') window._rtHideSplash(); }, 12000);
+      })();
+
       // Block pusher.com CDN (GDPR) — intercept mxscript() loader
       (function() {
         function wrap(orig) {
@@ -443,6 +607,7 @@ data:
           if (edit && edit.changes && edit.changes.length > 0) scheduleRelay();
         });
         initPresence(graph);
+        if (typeof window._rtHideSplash === 'function') window._rtHideSplash();
         console.log('[DrawIO RT] Ready');
         return true;
       }
