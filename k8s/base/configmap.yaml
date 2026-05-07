@@ -12,12 +12,19 @@ data:
   templates.xml: |
     <?xml version="1.0" encoding="UTF-8"?>
     <templates>
-      <template
-        section="Custom"
-        title="Blank Diagram"
-        url="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'/>"
-        preview=""
-        libs="general;basic" />
+      <template section="Project"      url="basic/kanban.xml"                    title="Kanban Board"           libs="general"            tags="kanban;agile;project" />
+      <template section="Project"      url="tables/gantt_1.xml"                  title="Gantt Chart"            libs="general"            tags="gantt;timeline;project" />
+      <template section="Process"      url="basic/flowchart.xml"                 title="Flowchart"              libs="general;flowchart"  tags="flowchart;process" />
+      <template section="Process"      url="basic/cross.xml"                     title="Swimlane Flowchart"     libs="general;flowchart"  tags="swimlane;cross-functional;process" />
+      <template section="Process"      url="business/bpmn.xml"                   title="BPMN"                   libs="bpmn"               tags="bpmn;process;business" />
+      <template section="Organization" url="basic/orgchart.xml"                  title="Org Chart"              libs="general"            tags="org;hierarchy;organization" />
+      <template section="Organization" url="basic/mindmap.xml"                   title="Mind Map"               libs="general"            tags="mindmap;brainstorm;ideas" />
+      <template section="Software"     url="basic/sequence.xml"                  title="Sequence Diagram"       libs="general;uml"        tags="sequence;uml;api" />
+      <template section="Software"     url="basic/erd.xml"                       title="Entity Relationship"    libs="general;entity"     tags="erd;database;schema" />
+      <template section="Software"     url="basic/classes.xml"                   title="UML Class Diagram"      libs="general;uml"        tags="class;uml;oop" />
+      <template section="Software"     url="software/git_flow_1.xml"             title="Git Flow"               libs="general"            tags="git;version;branching" />
+      <template section="Network"      url="network/cisco_1.xml"                 title="Network Diagram"        libs="cisco"              tags="network;infrastructure;cisco" />
+      <template section="Business"     url="business/business_model_canvas_1.xml" title="Business Model Canvas" libs="general"            tags="canvas;business;strategy" />
     </templates>
   PreConfig.js: |
     // draw.io PreConfig.js — real-time collaboration shim (GDPR-compliant, no Pusher)
@@ -462,7 +469,7 @@ data:
               }
             });
             _rtRestoreEditorState();
-            if (!_rtIsConnected()) setTimeout(showShareDialog, 50);
+            setTimeout(showShareDialog, 50);
           }
         }
         var _gdTimer = null;
@@ -678,7 +685,7 @@ data:
       (function() {
         var _oa = window.alert;
         window.alert = function(msg) {
-          if (_isGDriveMsg(msg)) { _rtRestoreEditorState(); if (!_rtIsConnected()) setTimeout(showShareDialog, 50); return; }
+          if (_isGDriveMsg(msg)) { _rtRestoreEditorState(); setTimeout(showShareDialog, 50); return; }
           return _oa.apply(this, arguments);
         };
       })();
@@ -700,7 +707,7 @@ data:
             cls.prototype['_rtGd' + m] = true;
             var orig = cls.prototype[m];
             cls.prototype[m] = function() {
-              if (_isGDriveMsg(arguments[0])) { _rtRestoreEditorState(); if (!_rtIsConnected()) setTimeout(showShareDialog, 50); return; }
+              if (_isGDriveMsg(arguments[0])) { _rtRestoreEditorState(); setTimeout(showShareDialog, 50); return; }
               return orig.apply(this, arguments);
             };
           }
@@ -716,7 +723,7 @@ data:
             if (typeof mxUtils[m] === 'function') {
               var orig = mxUtils[m];
               mxUtils[m] = function(msg) {
-                if (_isGDriveMsg(msg)) { _rtRestoreEditorState(); if (!_rtIsConnected()) setTimeout(showShareDialog, 50); return; }
+                if (_isGDriveMsg(msg)) { _rtRestoreEditorState(); setTimeout(showShareDialog, 50); return; }
                 return orig.apply(this, arguments);
               };
             }
@@ -728,7 +735,7 @@ data:
           if (typeof origShow === 'function') {
             mxWindow.prototype.show = function() {
               if (this.div && _isGDriveMsg(this.div)) {
-                _rtRestoreEditorState(); if (!_rtIsConnected()) setTimeout(showShareDialog, 50);
+                _rtRestoreEditorState(); setTimeout(showShareDialog, 50);
                 return;
               }
               return origShow.apply(this, arguments);

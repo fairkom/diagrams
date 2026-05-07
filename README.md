@@ -127,6 +127,10 @@ The draw.io ConfigMap (`base/configmap.yaml`) contains:
 - `PreConfig.js` — the RT shim loaded before draw.io's `app.min.js`
 - `templates.xml` — custom diagram templates
 
+## Templates
+
+If you want the full draw.io gallery with all 200+ templates instead, just change templateFile in drawio-config.json from /templates/templates.xml to /templates/index.xml.
+
 ## Troubleshooting
 
 **WebSocket not connecting**
