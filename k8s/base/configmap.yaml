@@ -45,7 +45,30 @@ data:
         if (!_parentOrigin && e.origin && e.origin !== loc.origin) _parentOrigin = e.origin;
       }, true);
 
-      var _applyingRemote = false;
+      var _applyingRemote         = false;
+      var _nameReady              = false; // true once identity is confirmed (auth'd user or guest entered name)
+      var _localChangeAfterRemote = false; // set in scheduleRelay when a local change arrives during remote apply
+
+      // User identity for cursor presence
+      var _userId    = 'u-' + Math.random().toString(36).slice(2, 8);
+      var _userName  = 'User';
+      var _ncUserId  = null; // Nextcloud login name (for avatar URL)
+      var _userColor = (function() {
+        var palette = ['#e74c3c','#3498db','#2ecc71','#9b59b6','#f39c12','#1abc9c','#e67e22','#c0392b'];
+        var h = 0;
+        for (var i = 0; i < _userId.length; i++) h = (h * 31 + _userId.charCodeAt(i)) & 0x7fffffff;
+        return palette[h % palette.length];
+      })();
+
+      // Register move listeners NOW — before app.min.js loads — so draw.io cannot block them
+      // with stopImmediatePropagation. _rtOnMove is set by initPresence once the graph is ready.
+      (function() {
+        function fwd(cx, cy) { if (typeof window._rtOnMove === 'function') window._rtOnMove(cx, cy); }
+        document.addEventListener('mousemove',  function(e) { fwd(e.clientX, e.clientY); }, true);
+        document.addEventListener('pointermove', function(e) { fwd(e.clientX, e.clientY); }, true);
+        document.addEventListener('mouseleave',  function()  { if (typeof window._rtOnLeave === 'function') window._rtOnLeave(); }, true);
+        document.addEventListener('pointerleave', function() { if (typeof window._rtOnLeave === 'function') window._rtOnLeave(); }, true);
+      })();
 
       // Block pusher.com CDN (GDPR) — intercept mxscript() loader
       (function() {
@@ -73,6 +96,21 @@ data:
       // WebSocket management: roomId -> { ws, channels: Set }
       const rooms = new Map();
 
+      // Send a JSON message on the first available open WebSocket
+      function sendWS(obj) {
+        var ws = null;
+        try {
+          var rid = localStorage.getItem('drawio-rt-roomId');
+          if (rid && rooms.has(rid)) ws = rooms.get(rid).ws;
+        } catch(e) {}
+        if (!ws || ws.readyState !== 1) {
+          for (var rs of rooms.values()) {
+            if (rs.ws && rs.ws.readyState === 1) { ws = rs.ws; break; }
+          }
+        }
+        if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj));
+      }
+
       function ensureWebSocket(roomId) {
         if (rooms.has(roomId)) return rooms.get(roomId).ws;
 
@@ -96,6 +134,23 @@ data:
                 _g.model.beginUpdate();
                 try { new mxCodec(_doc).decode(_doc.documentElement, _g.model); }
                 finally { _g.model.endUpdate(); }
+                // After endUpdate, all model events from the decode have already fired synchronously.
+                // Resetting here means _localChangeAfterRemote now tracks only subsequent user edits.
+                _localChangeAfterRemote = false;
+                // If no local edit arrived in the next 50 ms, clear draw.io's dirty flag so it
+                // does not auto-save the remote change — Tab A (the sender) already saved it.
+                setTimeout(function() {
+                  if (!_localChangeAfterRemote) {
+                    try {
+                      var ui = window.__drawioEditorUi;
+                      if (ui && ui.editor) {
+                        if (typeof ui.editor.setModified === 'function') ui.editor.setModified(false);
+                        ui.editor.modified = false;
+                      }
+                    } catch(e) {}
+                  }
+                  _localChangeAfterRemote = false;
+                }, 50);
                 setTimeout(function() { _applyingRemote = false; }, 1000);
                 console.log('[DrawIO RT] Applied remote XML (' + raw.xml.length + ' chars)');
               } catch(e) {
@@ -110,6 +165,12 @@ data:
               _drawioMsgHandlers.forEach(function(h) { try { h(fakeEvt); } catch(e) {} });
               setTimeout(function() { _applyingRemote = false; }, 1000);
             }
+            return;
+          }
+
+          // Cursor presence from another tab
+          if (raw.type === 'cursor') {
+            if (typeof window._rtUpdateCursor === 'function') window._rtUpdateCursor(raw);
             return;
           }
 
@@ -275,11 +336,27 @@ data:
         return _xhrSend.apply(this, arguments);
       };
 
-      // Re-search for graph after diagram loads
+      // Re-search for graph after diagram loads; capture Nextcloud user name
       _origAEL('message', function(e) {
+        if (e.origin === loc.origin) return; // only care about cross-origin (Nextcloud)
         try {
           const msg = typeof e.data === 'string' ? JSON.parse(e.data) : e.data;
-          if (msg && msg.action === 'load') setTimeout(attachModelListener, 1000);
+          if (!msg || typeof msg !== 'object') return;
+          if (msg.action === 'load') {
+            setTimeout(attachModelListener, 1000);
+            if (msg.userId)      _ncUserId = msg.userId;
+            if (msg.displayName) _userName = msg.displayName;
+          }
+          if (msg.action === 'configure') {
+            if (msg.userId)      _ncUserId = msg.userId;
+            if (msg.displayName) _userName = msg.displayName;
+          }
+          // Nextcloud sends user info in resp[0] — e.g. {uid:"fairkomadmin", displayName:"..."}
+          if (msg.action === 'remoteInvokeResponse' && Array.isArray(msg.resp) && msg.resp[0]) {
+            var r = msg.resp[0];
+            if (r.uid)         { _ncUserId = r.uid; _userId = 'nc-' + r.uid; _nameReady = true; }
+            if (r.displayName) _userName = r.displayName;
+          }
         } catch(ex) {}
       });
 
@@ -334,7 +411,7 @@ data:
 
         let _relayTimer = null;
         function scheduleRelay() {
-          if (_applyingRemote) return;
+          if (_applyingRemote) { _localChangeAfterRemote = true; return; }
           clearTimeout(_relayTimer);
           _relayTimer = setTimeout(function() {
             try {
@@ -365,8 +442,171 @@ data:
           const edit = evt && evt.getProperty && evt.getProperty('edit');
           if (edit && edit.changes && edit.changes.length > 0) scheduleRelay();
         });
+        initPresence(graph);
         console.log('[DrawIO RT] Ready');
         return true;
+      }
+
+      // Cursor presence overlay: show other users' cursors on the diagram canvas
+      function initPresence(graph) {
+        if (graph._rtPresenceInit) return;
+        graph._rtPresenceInit = true;
+        console.log('[DrawIO RT] Presence init');
+
+        // Identity check: authenticated Nextcloud users are ready immediately.
+        // Anonymous / external-link users get a name prompt after 1.5 s (to let NC postMessages arrive).
+        if (_ncUserId) {
+          _nameReady = true;
+        } else {
+          var _saved = null;
+          try { _saved = localStorage.getItem('drawio-rt-guestName'); } catch(e) {}
+          if (_saved) {
+            _userName = _saved;
+            _nameReady = true;
+          } else {
+            setTimeout(function() {
+              if (_nameReady) return; // NC identity arrived in the meantime
+              var backdrop = document.createElement('div');
+              backdrop.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.45);z-index:99999;display:flex;align-items:center;justify-content:center';
+              var box = document.createElement('div');
+              box.style.cssText = 'background:#fff;border-radius:10px;padding:28px 32px;box-shadow:0 8px 32px rgba(0,0,0,.3);font-family:sans-serif;min-width:280px;text-align:center';
+              box.innerHTML =
+                '<div style="font-size:16px;font-weight:bold;margin-bottom:12px">Enter your name</div>' +
+                '<input id="_rtGuestNameInput" type="text" placeholder="display name" maxlength="40" ' +
+                  'style="width:100%;box-sizing:border-box;padding:8px 10px;font-size:14px;border:1px solid #ccc;border-radius:6px;margin-bottom:14px"/>' +
+                '<button id="_rtGuestNameOk" style="background:#3498db;color:#fff;border:none;border-radius:6px;padding:8px 22px;font-size:14px;cursor:pointer;width:100%">Join</button>';
+              backdrop.appendChild(box);
+              document.body.appendChild(backdrop);
+              var inp = document.getElementById('_rtGuestNameInput');
+              var btn = document.getElementById('_rtGuestNameOk');
+              function confirmName() {
+                var n = inp.value.trim();
+                if (!n) return;
+                _userName = n;
+                _nameReady = true;
+                try { localStorage.setItem('drawio-rt-guestName', n); } catch(e) {}
+                document.body.removeChild(backdrop);
+              }
+              btn.addEventListener('click', confirmName);
+              inp.addEventListener('keydown', function(e) { if (e.key === 'Enter') confirmName(); });
+              setTimeout(function() { inp.focus(); }, 50);
+            }, 1500);
+          }
+        }
+
+        // Fixed overlay on body — never clipped by graph.container's overflow:hidden.
+        var overlay = document.createElement('div');
+        overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;overflow:hidden;z-index:2147483647';
+        document.body.appendChild(overlay);
+
+        // userId -> { el, dx, dy, curX, curY, hidden, timeout }
+        var cursors = {};
+
+        // Diagram coords → viewport px, accounting for container scroll (draw.io pans via scrollLeft/scrollTop)
+        function toPx(dx, dy) {
+          var v    = graph.view;
+          var rect = graph.container.getBoundingClientRect();
+          var sl   = graph.container.scrollLeft || 0;
+          var st   = graph.container.scrollTop  || 0;
+          return {
+            x: rect.left + (dx + v.translate.x) * v.scale - sl,
+            y: rect.top  + (dy + v.translate.y) * v.scale - st
+          };
+        }
+
+        // rAF render loop: lerp each cursor toward its diagram-coordinate target every frame.
+        // This replaces CSS transitions — no flicker on rapid updates, and pan/zoom/scroll
+        // are handled automatically because toPx() reads the live view state each frame.
+        (function renderLoop() {
+          for (var uid in cursors) {
+            var cur = cursors[uid];
+            if (cur.hidden) continue;
+            var px = toPx(cur.dx, cur.dy);
+            if (cur.curX === undefined) { cur.curX = px.x; cur.curY = px.y; }
+            else { cur.curX += (px.x - cur.curX) * 0.18; cur.curY += (px.y - cur.curY) * 0.18; }
+            cur.el.style.transform = 'translate(' + cur.curX + 'px,' + cur.curY + 'px)';
+          }
+          requestAnimationFrame(renderLoop);
+        })();
+
+        window._rtUpdateCursor = function(data) {
+          if (!data.userId || data.userId === _userId) return;
+
+          if (data.x === null || data.y === null) {
+            if (cursors[data.userId]) {
+              var c = cursors[data.userId];
+              c.hidden = true;
+              c.curX = undefined; // snap to correct position on next appearance
+              c.el.style.visibility = 'hidden';
+              clearTimeout(c.timeout);
+            }
+            return;
+          }
+
+          var color = data.color || '#3498db';
+          var name  = (data.userName || 'User').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+          if (!cursors[data.userId]) {
+            var uid64     = data.ncUserId || '';
+            var avatarUrl = (uid64 && _parentOrigin) ? (_parentOrigin + '/avatar/' + encodeURIComponent(uid64) + '/64?v=0') : '';
+            var el = document.createElement('div');
+            el.style.cssText = 'position:absolute;left:0;top:0;pointer-events:none;will-change:transform;visibility:hidden;display:flex;align-items:flex-start';
+            el.innerHTML =
+              '<svg width="18" height="22" viewBox="0 0 18 22" style="flex-shrink:0;filter:drop-shadow(1px 1px 1px rgba(0,0,0,.4))">' +
+                '<path d="M1 1 L1 18 L5 13 L8 21 L10 20 L7 12 L12 12 Z" fill="' + color + '" stroke="white" stroke-width="1.2"/>' +
+              '</svg>' +
+              '<div style="margin-left:4px;margin-top:8px;display:flex;flex-direction:column;align-items:center;gap:2px">' +
+                (avatarUrl ? '<img src="' + avatarUrl + '" style="width:28px;height:28px;border-radius:50%;border:2px solid ' + color + ';display:block" onerror="this.style.display=\'none\'">' : '') +
+                '<div style="background:' + color + ';color:#fff;font:bold 11px/1.5 sans-serif;padding:1px 6px;border-radius:10px;white-space:nowrap;box-shadow:0 1px 3px rgba(0,0,0,.3)">' +
+                  name +
+                '</div>' +
+              '</div>';
+            overlay.appendChild(el);
+            cursors[data.userId] = { el: el, dx: 0, dy: 0, hidden: true, curX: undefined, curY: undefined, timeout: null };
+            console.log('[DrawIO RT] New cursor for', data.userName || data.userId);
+          }
+
+          var cur = cursors[data.userId];
+          cur.dx = data.x;
+          cur.dy = data.y;
+          cur.hidden = false;
+          cur.el.style.visibility = '';
+
+          clearTimeout(cur.timeout);
+          cur.timeout = setTimeout(function() {
+            cur.hidden = true;
+            cur.curX = undefined;
+            cur.el.style.visibility = 'hidden';
+          }, 8000);
+        };
+
+        // Wire the early-registered capture listeners to this instance's position sender.
+        // Leave is debounced 800 ms — covers brief event gaps when hovering over draw.io
+        // connection points or handles, which can briefly trigger document-level leave events.
+        var _cursorTimer = null;
+        var _leaveTimer  = null;
+        function _onMove(cx, cy) {
+          if (!_nameReady) return;
+          if (_leaveTimer) { clearTimeout(_leaveTimer); _leaveTimer = null; }
+          if (_cursorTimer) return;
+          var rect = graph.container.getBoundingClientRect();
+          if (cx < rect.left || cx > rect.right || cy < rect.top || cy > rect.bottom) return;
+          _cursorTimer = setTimeout(function() { _cursorTimer = null; }, 50);
+          var v  = graph.view;
+          var sl = graph.container.scrollLeft || 0;
+          var st = graph.container.scrollTop  || 0;
+          var dx = ((cx - rect.left) + sl) / v.scale - v.translate.x;
+          var dy = ((cy - rect.top)  + st) / v.scale - v.translate.y;
+          sendWS({ type:'cursor', userId:_userId, userName:_userName, ncUserId:_ncUserId, color:_userColor, x:dx, y:dy });
+        }
+        window._rtOnMove  = function(cx, cy) { _onMove(cx, cy); };
+        window._rtOnLeave = function() {
+          if (_leaveTimer) return;
+          _leaveTimer = setTimeout(function() {
+            _leaveTimer = null;
+            sendWS({ type:'cursor', userId:_userId, userName:_userName, ncUserId:_ncUserId, color:_userColor, x:null, y:null });
+          }, 800);
+        };
       }
 
       (function poll() {

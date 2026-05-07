@@ -107,7 +107,7 @@ In the Nextcloud admin panel (draw.io app settings), replace the default server 
 - Default: `https://embed.diagrams.net`
 - Self-hosted: `https://drawio-dev.fairkom.net`
 
-Ensure the draw.io app is configured with `embedRT=1` to enable real-time mode.
+Ensure the draw.io app is configured with `embedRT=1` to enable real-time mode. Do not activate offline mode but activate automatic saving. 
 
 ## API Endpoints (realtime-server)
 
