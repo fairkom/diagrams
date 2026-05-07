@@ -199,7 +199,7 @@ data:
           var el = document.createElement('div');
           el.id = '_rtSplash';
           el.innerHTML =
-            '<div id="_rtSplTitle">diagramming <strong>together</strong></div>' +
+            '<div id="_rtSplTitle">diagramming <strong>boards</strong> together</div>' +
             '<div class="_rtSplCards">' +
               '<div class="_rtSplCard">' + _SVG_FLOW   + '</div>' +
               '<div class="_rtSplCard">' + _SVG_KANBAN + '</div>' +
@@ -360,6 +360,42 @@ data:
         return ws;
       }
 
+      function _rtIsConnected() {
+        if (!_plainRoomId) return false;
+        var r = rooms.get(_plainRoomId);
+        return !!(r && r.ws && r.ws.readyState === 1);
+      }
+
+      // Undo draw.io modal state left when we suppress a GDrive collaboration dialog.
+      function _rtRestoreEditorState() {
+        function _doRestore() {
+          try {
+            var ui = window.__drawioEditorUi;
+            if (!ui) return;
+            // Close any GDrive dialogs tracked in ui.dialogs[] and remove their glass panes
+            if (ui.dialogs) {
+              ui.dialogs = ui.dialogs.filter(function(d) {
+                try {
+                  var t = ((d.container && d.container.textContent) || '').toLowerCase();
+                  if (!t.includes('google drive')) return true;
+                  if (d.glass && d.glass.parentNode) d.glass.parentNode.removeChild(d.glass);
+                  if (d.container && d.container.parentNode) d.container.parentNode.removeChild(d.container);
+                  return false;
+                } catch(e) { return true; }
+              });
+            }
+            if (ui.glass && ui.glass.parentNode) { ui.glass.parentNode.removeChild(ui.glass); ui.glass = null; }
+            var g = ui.editor && ui.editor.graph;
+            if (g) {
+              if (typeof g.setEnabled === 'function') g.setEnabled(true);
+              if (g.container) g.container.style.pointerEvents = '';
+            }
+          } catch(e) {}
+        }
+        _doRestore();
+        setTimeout(_doRestore, 150);
+      }
+
       // BroadcastChannel: share roomId across same-origin tabs (best-effort, partitioned in Firefox)
       let _bc = null;
       try { _bc = new BroadcastChannel('drawio-rt'); } catch(e) {}
@@ -376,6 +412,113 @@ data:
       if (_bc) _bc.onmessage = function(e) {
         if (e.data && e.data.type === 'roomId') autoSubscribeRoom(e.data.roomId);
       };
+
+      // ── Plain-mode collaboration (direct URL, not Nextcloud embed) ────────────
+      // Room ID lives in the URL hash so collaborators can join by sharing a link.
+      // The RT server already stores room.lastXml, so anyone opening the shared URL
+      // instantly receives the current diagram on WebSocket connect — no Google Drive.
+      var _isEmbedMode = (window.top !== window.self);
+      var _plainRoomId = null;
+      if (!_isEmbedMode) {
+        // Read room ID from hash (shared link) then immediately clear the hash so draw.io
+        // does not interpret it as a file URL to load ("Error loading file").
+        try { _plainRoomId = new URLSearchParams(window.location.hash.replace(/^#/, '?')).get('rt'); } catch(e) {}
+        if (_plainRoomId) {
+          try { history.replaceState(null, '', loc.pathname + loc.search); } catch(e) {}
+        } else {
+          // Not a shared link — restore from localStorage (page refresh) or generate fresh
+          try { _plainRoomId = localStorage.getItem('drawio-rt-plainRoom'); } catch(e) {}
+          if (!_plainRoomId) _plainRoomId = 'r' + Math.random().toString(36).slice(2, 10);
+        }
+        try { localStorage.setItem('drawio-rt-plainRoom', _plainRoomId); } catch(e) {}
+        try { localStorage.setItem('drawio-rt-roomId',    _plainRoomId); } catch(e) {}
+        // Connect immediately so late-joiners receive room.lastXml the moment they open the link
+        ensureWebSocket(_plainRoomId);
+        // Intercept draw.io's "Connect to Google Drive to collaborate" dialog.
+        // draw.io builds dialogs across multiple DOM operations, so checking a newly-added
+        // node immediately may see empty text. Instead we debounce 200 ms then scan all
+        // direct body children — by then the full dialog text is populated.
+        function _hideGDriveDialog() {
+          if (_shareDialogOpen) return;
+          var found = false;
+          Array.from(document.body.children).forEach(function(child) {
+            if (child._rtOwned) return;
+            var txt = (child.innerText || child.textContent || '').toLowerCase();
+            if (txt.includes('google drive') && (txt.includes('collaborat') || txt.includes('before you can'))) {
+              child.style.display = 'none';
+              found = true;
+            }
+          });
+          if (found) {
+            // Also hide the companion glass backdrop — it has no text and no interactive children
+            Array.from(document.body.children).forEach(function(el) {
+              if (el._rtOwned) return;
+              var cs = window.getComputedStyle(el);
+              if (cs.display === 'none') return;
+              if ((cs.position === 'fixed' || cs.position === 'absolute') &&
+                  !(el.innerText || '').trim() &&
+                  !el.querySelector('button,input,select,textarea')) {
+                el.style.display = 'none';
+              }
+            });
+            _rtRestoreEditorState();
+            if (!_rtIsConnected()) setTimeout(showShareDialog, 50);
+          }
+        }
+        var _gdTimer = null;
+        var _gdObs = new MutationObserver(function() {
+          // Run immediately and again at 100ms — text may populate in a second microtask
+          clearTimeout(_gdTimer);
+          _hideGDriveDialog();
+          _gdTimer = setTimeout(_hideGDriveDialog, 100);
+        });
+        function _startGDObs() { _gdObs.observe(document.body, { childList: true, subtree: true }); }
+        if (document.body) { _startGDObs(); } else { document.addEventListener('DOMContentLoaded', _startGDObs); }
+      }
+
+      // Share dialog: shown when user clicks the Invite button or when draw.io's
+      // Google Drive dialog is intercepted. Provides a copyable link with the room ID.
+      var _shareDialogOpen = false;
+      var _shareLastClosed = 0;
+      function showShareDialog() {
+        if (_shareDialogOpen || _isEmbedMode || !_plainRoomId) return;
+        if (Date.now() - _shareLastClosed < 5000) return;
+        _shareDialogOpen = true;
+        var url = loc.protocol + '//' + loc.host + loc.pathname + '#rt=' + _plainRoomId;
+        var backdrop = document.createElement('div');
+        backdrop._rtOwned = true;
+        backdrop.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.42);z-index:2147483644;display:flex;align-items:center;justify-content:center';
+        var box = document.createElement('div');
+        box.style.cssText = 'background:white;border-radius:14px;padding:28px 28px 20px;width:420px;max-width:calc(100vw - 40px);' +
+          'box-shadow:0 12px 48px rgba(0,0,0,.28);font-family:"Segoe UI",system-ui,Arial,sans-serif';
+        box.innerHTML =
+          '<div style="font-size:17px;font-weight:700;color:#1e293b;margin-bottom:6px">Invite collaborators</div>' +
+          '<div style="font-size:13px;color:#64748b;margin-bottom:20px">Anyone who opens this link joins the diagram live — no sign-in required.</div>' +
+          '<div style="display:flex;gap:8px">' +
+            '<input id="_rtShareUrl" readonly value="' + url.replace(/"/g,'&quot;') + '" ' +
+              'style="flex:1;padding:9px 11px;border:1.5px solid #cbd5e1;border-radius:8px;font-size:12px;color:#334155;outline:none;background:#f8fafc"/>' +
+            '<button id="_rtShareCopy" style="padding:9px 16px;background:#3b82f6;color:white;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;flex-shrink:0">Copy link</button>' +
+          '</div>' +
+          '<div style="margin-top:16px;display:flex;justify-content:space-between;align-items:center">' +
+            '<span style="font-size:11px;color:#94a3b8">Room: ' + _plainRoomId + '</span>' +
+            '<button id="_rtShareClose" style="background:none;border:none;color:#64748b;font-size:13px;cursor:pointer;padding:4px 10px;border-radius:6px">Close</button>' +
+          '</div>';
+        backdrop.appendChild(box);
+        document.body.appendChild(backdrop);
+        var inp = document.getElementById('_rtShareUrl');
+        inp.addEventListener('focus', function() { inp.select(); });
+        inp.select();
+        document.getElementById('_rtShareCopy').addEventListener('click', function() {
+          var btn = this;
+          try { navigator.clipboard.writeText(url).catch(function(){}); } catch(e) {}
+          try { inp.select(); document.execCommand('copy'); } catch(e) {}
+          btn.textContent = 'Copied!'; btn.style.background = '#22c55e';
+          setTimeout(function() { btn.textContent = 'Copy link'; btn.style.background = '#3b82f6'; }, 2500);
+        });
+        function closeShare() { if (backdrop.parentNode) backdrop.parentNode.removeChild(backdrop); _shareDialogOpen = false; _shareLastClosed = Date.now(); }
+        document.getElementById('_rtShareClose').addEventListener('click', closeShare);
+        backdrop.addEventListener('click', function(e) { if (e.target === backdrop) closeShare(); });
+      }
 
       // Pusher channel stub
       function PusherChannel(name) {
@@ -524,7 +667,23 @@ data:
         } catch(ex) {}
       });
 
-      // Capture EditorUi instance via prototype patch
+      // Returns true if msg text looks like the Google Drive collaboration requirement
+      function _isGDriveMsg(txt) {
+        if (!txt || _isEmbedMode) return false;
+        var t = (typeof txt === 'string' ? txt : (txt.textContent || txt.innerHTML || '')).toLowerCase();
+        return t.includes('google drive') && (t.includes('collaborat') || t.includes('before you can'));
+      }
+
+      // Intercept native window.alert (draw.io may fall back to it in some builds)
+      (function() {
+        var _oa = window.alert;
+        window.alert = function(msg) {
+          if (_isGDriveMsg(msg)) { _rtRestoreEditorState(); if (!_rtIsConnected()) setTimeout(showShareDialog, 50); return; }
+          return _oa.apply(this, arguments);
+        };
+      })();
+
+      // Capture EditorUi instance via prototype patch; also intercept GDrive dialogs.
       function patchEditorUi() {
         const cls = window.EditorUi;
         if (!cls || !cls.prototype || cls.prototype._rtPatched) return !!window.__drawioEditorUi;
@@ -535,7 +694,47 @@ data:
           if (!window.__drawioEditorUi) window.__drawioEditorUi = this;
           return r;
         };
+        // Patch text-bearing dialog/error methods on EditorUi prototype
+        ['showDialog','showError','handleError','alert','confirm','showGoogleDriveDialog'].forEach(function(m) {
+          if (typeof cls.prototype[m] === 'function' && !cls.prototype['_rtGd' + m]) {
+            cls.prototype['_rtGd' + m] = true;
+            var orig = cls.prototype[m];
+            cls.prototype[m] = function() {
+              if (_isGDriveMsg(arguments[0])) { _rtRestoreEditorState(); if (!_rtIsConnected()) setTimeout(showShareDialog, 50); return; }
+              return orig.apply(this, arguments);
+            };
+          }
+        });
         return !!window.__drawioEditorUi;
+      }
+
+      // Patch mxWindow.prototype.show and mxUtils.alert once they are defined by app.min.js
+      function patchMxGlobals() {
+        if (typeof mxUtils !== 'undefined' && !mxUtils._rtGdPatched) {
+          mxUtils._rtGdPatched = true;
+          ['alert','error'].forEach(function(m) {
+            if (typeof mxUtils[m] === 'function') {
+              var orig = mxUtils[m];
+              mxUtils[m] = function(msg) {
+                if (_isGDriveMsg(msg)) { _rtRestoreEditorState(); if (!_rtIsConnected()) setTimeout(showShareDialog, 50); return; }
+                return orig.apply(this, arguments);
+              };
+            }
+          });
+        }
+        if (typeof mxWindow !== 'undefined' && !mxWindow._rtGdPatched) {
+          mxWindow._rtGdPatched = true;
+          var origShow = mxWindow.prototype.show;
+          if (typeof origShow === 'function') {
+            mxWindow.prototype.show = function() {
+              if (this.div && _isGDriveMsg(this.div)) {
+                _rtRestoreEditorState(); if (!_rtIsConnected()) setTimeout(showShareDialog, 50);
+                return;
+              }
+              return origShow.apply(this, arguments);
+            };
+          }
+        }
       }
 
       // Attach model change listener and relay updates via WebSocket
@@ -776,6 +975,7 @@ data:
 
       (function poll() {
         patchEditorUi();
+        patchMxGlobals();
         if (!attachModelListener()) setTimeout(poll, 500);
       })();
     })();
