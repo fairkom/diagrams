@@ -81,6 +81,13 @@ spec:
             - name: drawio-config
               mountPath: /usr/share/webapps/drawio/js/PreConfig.js
               subPath: PreConfig.js
+          resources:
+            requests:
+              memory: "384Mi"
+              cpu: "250m"
+            limits:
+              memory: "1Gi"
+              cpu: "1000m"
           livenessProbe:
             httpGet:
               path: /
