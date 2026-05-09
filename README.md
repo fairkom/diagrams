@@ -14,6 +14,8 @@ The integration is designed for the Nextcloud draw.io app, where draw.io runs in
 - Support for flowcharts, UML, entity relationships, and more
 - **Real-time collaborative editing** with separate rt server
 - Export to multiple formats (PNG, SVG, PDF, etc.)
+- Show Nextcloud avatars moving around from all collaborators
+- Requests display name from anonymous external users
 - Self-hosted and privacy-focused
 
 
@@ -105,7 +107,9 @@ The draw.io pod's startup command copies the ConfigMap-mounted file into Tomcat'
 In the Nextcloud admin panel (draw.io app settings), replace the default server URL:
 
 - Default: `https://embed.diagrams.net`
-- Self-hosted: `https://drawio-dev.fairkom.net`
+- Self-hosted: `https://drawio-dev.fairkom.net` 
+
+This server is for demo & dev purposes only and may break.  Contact sales ät fairkom.eu if you want fairkom host that for your production Nextcloud.
 
 Ensure the draw.io app is configured with `embedRT=1` to enable real-time mode. Do not activate offline mode but activate automatic saving. 
 
@@ -147,8 +151,8 @@ If you want the full draw.io gallery with all 200+ templates instead, just chang
 
 ## License
 
-Apache 2.0
+AGPLv3
 
 ## Author
 
-Roland Alton
+[Roland Alton](https://roland.alton.at) with paid AI support from mistral & claude

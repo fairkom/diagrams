@@ -57,6 +57,8 @@ docker build -t registry.osalliance.com/drawio/drawio-realtime:vX.X.X .
 docker push registry.osalliance.com/drawio/drawio-realtime:vX.X.X
 ```
 
+(use your own registry)
+
 Update the image tag in `../base/realtime-server-deployment.yaml`, then apply:
 
 ```bash
@@ -89,4 +91,4 @@ kubectl port-forward service/drawio-realtime 8081:8081
 
 ## License
 
-Apache 2.0
+AGPLv3

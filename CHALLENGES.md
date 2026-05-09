@@ -4,7 +4,7 @@ This document records the problems encountered and approaches tried while buildi
 
 ## Goal
 
-draw.io's built-in real-time collaboration uses **Pusher.com** (a US-based cloud push service) as its message broker. When draw.io runs self-hosted and embedded inside a Nextcloud iframe, we needed to replace Pusher with a local server — without modifying draw.io's own source code — for GDPR compliance.
+draw.io's built-in real-time collaboration uses **Pusher.com** (a US-based cloud push service) as its message broker and Cludflare. When draw.io runs self-hosted and embedded inside a Nextcloud iframe, we needed to replace Pusher with a local server — without modifying draw.io's own source code — for GDPR compliance.
 
 The target: moving an object in one browser tab must appear in all other open tabs within a second.
 
