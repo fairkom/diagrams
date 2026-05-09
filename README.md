@@ -108,8 +108,9 @@ In the Nextcloud admin panel (draw.io app settings), replace the default server 
 
 - Default: `https://embed.diagrams.net`
 - Self-hosted: `https://drawio-dev.fairkom.net` 
+- Demo diagram: `https://test.faircloud.eu/s/fXJTg6iM6BsWWxz`
 
-This server is for demo & dev purposes only and may break.  Contact sales ät fairkom.eu if you want fairkom host that for your production Nextcloud.
+This server is for demonstration & dev purposes only and may break or timeout (low resource dev cluster).  Contact sales ät fairkom.eu if you want fairkom host that reliably for your production Nextcloud.
 
 Ensure the draw.io app is configured with `embedRT=1` to enable real-time mode. Do not activate offline mode but activate automatic saving. 
 
