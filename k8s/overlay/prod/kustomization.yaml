@@ -18,13 +18,6 @@ patches:
       name: drawio-config
     path: patch-configmap.yaml
 
-images:
-  # Update these with your registry details
-  # Example: docker.io/youruser/drawio-realtime:v1.0
-  - name: drawio-realtime
-    newName: docker.io/youruser/drawio-realtime
-    newTag: latest
-
 labels:
   - pairs:
       environment: production

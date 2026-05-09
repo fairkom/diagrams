@@ -3,18 +3,19 @@ kind: Ingress
 metadata:
   name: drawio
   annotations:
-    # Cert-manager annotation for automatic certificate issuance
     cert-manager.io/issuer: letsencrypt-prod
-    # WebSocket support
     nginx.ingress.kubernetes.io/websocket-services: drawio
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
-    # SSL redirect
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
 spec:
   ingressClassName: nginx
+  tls:
+    - hosts:
+        - drawio.fairkom.net
+      secretName: drawio-prod-tls
   rules:
-    - host: drawio.example.com  # Change to your production domain
+    - host: drawio.fairkom.net
       http:
         paths:
           - path: /
@@ -24,7 +25,3 @@ spec:
                 name: drawio
                 port:
                   number: 80
-  tls:
-    - hosts:
-        - drawio.example.com  # Change to your production domain
-      secretName: drawio-tls
