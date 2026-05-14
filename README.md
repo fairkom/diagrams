@@ -91,9 +91,9 @@ kubectl apply -f base/configmap.yaml
 kubectl apply -k overlay/dev
 ```
 
-### 3. Updating PreConfig.js
+### 3. Configuration
 
-`PreConfig.js` lives inside `base/configmap.yaml` under the `PreConfig.js:` key. After editing:
+Configurations and our custom logic live inside `base/configmap.yaml`. You need to adapt at least the realtimeUrl. After each edit do a:
 
 ```bash
 kubectl apply -f base/configmap.yaml
@@ -102,9 +102,26 @@ kubectl rollout restart deployment/drawio
 
 The draw.io pod's startup command copies the ConfigMap-mounted file into Tomcat's webapp directory on every restart.
 
+The draw.io ConfigMap (`base/configmap.yaml`) contains:
+
+- `drawio-config.json` — sets `realtimeUrl` and `pusherKey: "local-rt"`
+- `PreConfig.js` — the RT shim loaded before draw.io's `app.min.js`
+- `templates.xml` — custom diagram templates
+
+If you want the full draw.io gallery with all 200+ templates instead, just change templateFile in drawio-config.json from /templates/templates.xml to /templates/index.xml.
+
+
+## Share a diagram
+
+Open the URL and start drawing. Use the share button to generate a link. Other users will have to enter their name so you can see their avatars. 
+
+draw.io stores diagrams in the browser by default. We have patched the annoying storage dialog at startup and show a 💾 symbol to indicate, that you should store your diagram on some device or cloud service.
+
 ## Nextcloud Integration
 
-In the Nextcloud admin panel (draw.io app settings), replace the default server URL:
+This realtime server works well with the draw.io Nextcloud app. It even shows the Nexctloud user avatars.  
+
+In the admin panel (draw.io app settings), replace the default server URL:
 
 - Default: `https://embed.diagrams.net`
 - Self-hosted: `https://drawio-dev.fairkom.net` 
@@ -124,17 +141,6 @@ Ensure the draw.io app is configured with `embedRT=1` to enable real-time mode. 
 | `/health` | GET | Liveness/readiness probe |
 | `/stats` | GET | JSON: room count, connected clients, uptime |
 
-## Configuration
-
-The draw.io ConfigMap (`base/configmap.yaml`) contains:
-
-- `drawio-config.json` — sets `realtimeUrl` and `pusherKey: "local-rt"`
-- `PreConfig.js` — the RT shim loaded before draw.io's `app.min.js`
-- `templates.xml` — custom diagram templates
-
-## Templates
-
-If you want the full draw.io gallery with all 200+ templates instead, just change templateFile in drawio-config.json from /templates/templates.xml to /templates/index.xml.
 
 ## Troubleshooting
 
@@ -152,7 +158,9 @@ If you want the full draw.io gallery with all 200+ templates instead, just chang
 
 ## License
 
-AGPLv3
+AGPLv3 
+
+Professional usage conditions see FAIRPAY.md
 
 ## Author
 

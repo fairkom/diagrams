@@ -6,7 +6,7 @@
 
 Real-time object sync is working between browser tabs using a custom Node.js WebSocket server. The implementation replaces Pusher.com with a self-hosted relay for GDPR compliance.
 
-**Mechanism in one sentence:** On every model change, the editing tab encodes the full diagram XML with mxGraph's own codec and sends it to the server; the server broadcasts it to all other tabs; receiving tabs apply it directly to their mxGraph model instance.
+**TL;DR** On every model change, the editing tab encodes the full diagram XML with mxGraph's own codec and sends it to the server; the server broadcasts it to all other tabs; receiving tabs apply it directly to their mxGraph model instance.
 
 ## Files Changed
 
