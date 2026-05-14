@@ -55,6 +55,37 @@ data:
       var _applyingRemote         = false;
       var _nameReady              = false; // true once identity is confirmed (auth'd user or guest entered name)
       var _localChangeAfterRemote = false; // set in scheduleRelay when a local change arrives during remote apply
+      var _lastServerXml = null;  // last XML received from RT server; used to restore Tab B after draft-dismiss
+
+      // Apply _lastServerXml to the graph — called after draft dialog is dismissed on Tab B,
+      // and also from attachModelListener as a safety net if no draft dialog appeared.
+      function _applyLastServerXml() {
+        if (!_lastServerXml) return;
+        var _g = (window.__drawioEditorUi && window.__drawioEditorUi.editor && window.__drawioEditorUi.editor.graph)
+                 || (window.graph && window.graph.model && window.graph);
+        if (!_g || !_g.model || typeof mxCodec === 'undefined' || typeof mxUtils === 'undefined') return;
+        try {
+          var _doc = mxUtils.parseXml(_lastServerXml);
+          _applyingRemote = true;
+          _g.model.beginUpdate();
+          try { new mxCodec(_doc).decode(_doc.documentElement, _g.model); }
+          finally { _g.model.endUpdate(); }
+          setTimeout(function() { _applyingRemote = false; }, 1000);
+          console.log('[DrawIO RT] Applied server XML (' + _lastServerXml.length + ' chars)');
+        } catch(e) { _applyingRemote = false; console.error('[DrawIO RT] _applyLastServerXml error:', e.message); }
+        // Re-enable the editor — draw.io may have left it disabled after the dialog
+        setTimeout(function() {
+          try {
+            var _g2 = (window.__drawioEditorUi && window.__drawioEditorUi.editor && window.__drawioEditorUi.editor.graph)
+                       || (window.graph && window.graph.model && window.graph);
+            if (_g2) {
+              if (typeof _g2.setEnabled === 'function') _g2.setEnabled(true);
+              if (_g2.container) _g2.container.style.pointerEvents = '';
+            }
+            _rtRestoreEditorState();
+          } catch(e) {}
+        }, 150);
+      }
 
       // User identity for cursor presence
       var _userId    = 'u-' + Math.random().toString(36).slice(2, 8);
@@ -241,6 +272,29 @@ data:
         setTimeout(function() { if (typeof window._rtHideSplash === 'function') window._rtHideSplash(); }, 12000);
       })();
 
+      // Replace draw.io's verbose "Unsaved changes. Click here to save." status bar with a
+      // small disc so the UI stays clean. draw.io sets geStatusAlert independently of
+      // setStatus (via the editor's dirty flag), so a CSS rule is the reliable fix.
+      (function() {
+        function _injectStatusCss() {
+          if (document.getElementById('_rtStatusCss')) return;
+          var s = document.createElement('style');
+          s.id = '_rtStatusCss';
+          s.textContent =
+            'a.geStatus div.geStatusAlert{' +
+            'font-size:0!important;min-width:20px!important;padding:0 2px!important;' +
+            'margin:0 2px!important;background:none!important;border:none!important;' +
+            'border-radius:0!important;display:inline-flex!important;' +
+            'align-items:center!important;justify-content:center!important;' +
+            'vertical-align:middle!important;cursor:pointer!important}' +
+            'a.geStatus div.geStatusAlert::before{' +
+            'content:"💾"!important;font-size:16px!important;line-height:1!important}';
+          (document.head || document.documentElement).appendChild(s);
+        }
+        if (document.head) { _injectStatusCss(); }
+        else { document.addEventListener('DOMContentLoaded', _injectStatusCss); }
+      })();
+
       // Block pusher.com CDN (GDPR) — intercept mxscript() loader
       (function() {
         function wrap(orig) {
@@ -271,7 +325,7 @@ data:
       function sendWS(obj) {
         var ws = null;
         try {
-          var rid = localStorage.getItem('drawio-rt-roomId');
+          var rid = sessionStorage.getItem('drawio-rt-roomId') || localStorage.getItem('drawio-rt-roomId');
           if (rid && rooms.has(rid)) ws = rooms.get(rid).ws;
         } catch(e) {}
         if (!ws || ws.readyState !== 1) {
@@ -296,6 +350,7 @@ data:
 
           // Primary path: plain XML relay from another tab
           if (raw.type === 'xml' && raw.xml && !_applyingRemote) {
+            _lastServerXml = raw.xml; // cache for re-application after draft-dialog dismiss
             var _g = (window.__drawioEditorUi && window.__drawioEditorUi.editor && window.__drawioEditorUi.editor.graph)
                      || (window.graph && window.graph.model && window.graph);
             if (_g && _g.model && typeof mxCodec !== 'undefined' && typeof mxUtils !== 'undefined') {
@@ -345,6 +400,12 @@ data:
             return;
           }
 
+          // Sync-request: a newly-joined tab asks all others to relay their current state
+          if (raw.type === 'sync-request') {
+            if (typeof window._rtScheduleRelay === 'function') window._rtScheduleRelay();
+            return;
+          }
+
           // Pusher channel dispatch (draw.io may bind events here in some configurations)
           for (const channel of roomState.channels) {
             const payload = raw.msg !== undefined ? raw : { msg: raw };
@@ -358,21 +419,29 @@ data:
 
         ws.addEventListener('open', () => {
           console.log('[DrawIO RT] WS open:', roomId);
-          // Relay current canvas after 800 ms so room.lastXml is populated for late joiners.
-          // Only sent if the canvas is non-empty (length > 200 filters blank default diagrams).
-          setTimeout(function() {
-            try {
-              if (typeof mxCodec === 'undefined' || typeof mxUtils === 'undefined') return;
-              var _g = (window.__drawioEditorUi && window.__drawioEditorUi.editor && window.__drawioEditorUi.editor.graph)
-                       || (window.graph && window.graph.model && window.graph);
-              if (!_g || !_g.model) return;
-              var xml = mxUtils.getXml(new mxCodec().encode(_g.model));
-              if (xml && xml.length > 200) {
-                ws.send(JSON.stringify({ type: 'xml', xml: xml }));
-                console.log('[DrawIO RT] Relayed initial state (' + xml.length + ' chars)');
-              }
-            } catch(e) {}
-          }, 800);
+          if (_rtFromLink) {
+            // Tab B (shared-link): ask already-connected tabs to relay their state.
+            // Sent after a brief pause so the server's immediate room.lastXml delivery
+            // arrives first; the sync-request is a fallback for when lastXml is absent.
+            setTimeout(function() { try { ws.send(JSON.stringify({ type: 'sync-request' })); } catch(e) {} }, 300);
+          } else {
+            // Tab A: relay current canvas so room.lastXml is populated for late joiners.
+            // This fires at WS connect time; a more reliable relay also fires from
+            // attachModelListener once the graph is confirmed ready.
+            setTimeout(function() {
+              try {
+                if (typeof mxCodec === 'undefined' || typeof mxUtils === 'undefined') return;
+                var _g = (window.__drawioEditorUi && window.__drawioEditorUi.editor && window.__drawioEditorUi.editor.graph)
+                         || (window.graph && window.graph.model && window.graph);
+                if (!_g || !_g.model) return;
+                var xml = mxUtils.getXml(new mxCodec().encode(_g.model));
+                if (xml && xml.length > 200) {
+                  ws.send(JSON.stringify({ type: 'xml', xml: xml }));
+                  console.log('[DrawIO RT] Relayed initial state (' + xml.length + ' chars)');
+                }
+              } catch(e) {}
+            }, 800);
+          }
         });
         ws.addEventListener('close', (e) => {
           console.warn('[DrawIO RT] WS closed:', roomId, e.code);
@@ -439,6 +508,87 @@ data:
 
       var _isEmbedMode = (window.top !== window.self);
 
+      // Double-level interception for auto-recovery suppression on shared-link tabs.
+      //
+      // Problem: draw.io assigns window.EditorUi (step 1), THEN defines all prototype
+      // methods like showNotification (step 2). Patching in step 1 is overwritten in step 2.
+      //
+      // Solution: when the window.EditorUi setter fires (step 1), immediately intercept the
+      // PROTOTYPE PROPERTY ASSIGNMENT for showNotification. When draw.io then does
+      // EditorUi.prototype.showNotification = fn (step 2), our inner setter fires and wraps fn
+      // before it is stored — so every future call goes through our wrapper.
+      //
+      // Same pattern applied to mxWindow.prototype.show.
+      (function() {
+        function _interceptProtoMethod(proto, method, wrapper) {
+          var _stored = null;
+          try {
+            Object.defineProperty(proto, method, {
+              configurable: true, enumerable: true,
+              get: function() { return _stored; },
+              set: function(fn) {
+                if (typeof fn === 'function' && !fn._rtW) {
+                  var _o = fn;
+                  _stored = function() { return wrapper.call(this, _o, arguments); };
+                  _stored._rtW = true;
+                } else { _stored = fn; }
+              }
+            });
+          } catch(e) {}
+        }
+
+        // EditorUi.prototype.showNotification and setStatus — intercept both because
+        // draw.io v24 shows the auto-recovery prompt via setStatus (HTML with a Restore link)
+        // after the /cache?alive response arrives asynchronously at ~350ms — before the
+        // 500ms poll-loop patches, but after our property interceptor is in place.
+        var _eu = null;
+        try {
+          Object.defineProperty(window, 'EditorUi', {
+            configurable: true, enumerable: true,
+            get: function() { return _eu; },
+            set: function(cls) {
+              _eu = cls;
+              if (!cls || !cls.prototype || cls.prototype._rtEuIntercepted) return;
+              cls.prototype._rtEuIntercepted = true;
+              // showNotification: non-blocking, safe to suppress
+              _interceptProtoMethod(cls.prototype, 'showNotification', function(orig, args) {
+                if (_rtFromLink) {
+                  var m = (typeof args[0] === 'string' ? args[0] : '').toLowerCase();
+                  if (m.includes('auto-sav') || m.includes('autosav') ||
+                      m.includes('recover')  || m.includes('restore') ||
+                      m.includes('wiederherstell')) return;
+                }
+                return orig.apply(this, args);
+              });
+              // setStatus: suppress recovery HTML and "Unsaved changes"
+              _interceptProtoMethod(cls.prototype, 'setStatus', function(orig, args) {
+                if (typeof args[0] === 'string') {
+                  var m = args[0].toLowerCase();
+                  if (m.includes('unsaved') || m.includes('click here to save')) {
+                    try { if (this.editor && typeof this.editor.setModified === 'function') this.editor.setModified(false); } catch(e) {}
+                    return;
+                  }
+                  if (_rtFromLink && (m.includes('restore') || m.includes('recover') ||
+                      m.includes('auto-sav') || m.includes('autosav') || m.includes('wiederherstell'))) return;
+                }
+                return orig.apply(this, args);
+              });
+              // showDialog / showError / alert / showGoogleDriveDialog — GDrive storage dialog
+              // now appears at ~100ms (faster because /cache?alive returns 200), before the
+              // 500ms poll-loop patch. Intercept here so it's blocked from the start.
+              ['showDialog','showError','handleError','alert','showGoogleDriveDialog'].forEach(function(m) {
+                _interceptProtoMethod(cls.prototype, m, function(orig, args) {
+                  if (_isGDriveMsg(args[0])) { _rtRestoreEditorState(); setTimeout(showShareDialog, 50); return; }
+                  if (m !== 'confirm' && _isAutoRecovMsg(args[0])) return;
+                  return orig.apply(this, args);
+                });
+              });
+            }
+          });
+        } catch(e) {}
+
+      })();
+
       // ── Plain-mode collaboration (direct URL, not Nextcloud embed) ────────────
       // Room ID lives in the URL hash so collaborators can join by sharing a link.
       // The RT server already stores room.lastXml, so anyone opening the shared URL
@@ -453,12 +603,15 @@ data:
           _rtFromLink = true;
           try { history.replaceState(null, '', loc.pathname + loc.search); } catch(e) {}
         } else {
-          // Not a shared link — restore from localStorage (page refresh) or generate fresh
-          try { _plainRoomId = localStorage.getItem('drawio-rt-plainRoom'); } catch(e) {}
+          // Not a shared link — restore from sessionStorage (page refresh in same tab) or generate fresh.
+          // sessionStorage is isolated per tab so a new tab always starts its own room,
+          // while a refresh re-joins the same room. localStorage was used here before but
+          // caused every new tab in the same browser to silently join an existing room.
+          try { _plainRoomId = sessionStorage.getItem('drawio-rt-plainRoom'); } catch(e) {}
           if (!_plainRoomId) _plainRoomId = 'r' + Math.random().toString(36).slice(2, 10);
         }
-        try { localStorage.setItem('drawio-rt-plainRoom', _plainRoomId); } catch(e) {}
-        try { localStorage.setItem('drawio-rt-roomId',    _plainRoomId); } catch(e) {}
+        try { sessionStorage.setItem('drawio-rt-plainRoom', _plainRoomId); } catch(e) {}
+        try { sessionStorage.setItem('drawio-rt-roomId',    _plainRoomId); } catch(e) {}
         // Connect immediately so late-joiners receive room.lastXml the moment they open the link
         ensureWebSocket(_plainRoomId);
         // Intercept draw.io's "Connect to Google Drive to collaborate" dialog.
@@ -502,18 +655,42 @@ data:
         function _startGDObs() { _gdObs.observe(document.body, { childList: true, subtree: true }); }
         if (document.body) { _startGDObs(); } else { document.addEventListener('DOMContentLoaded', _startGDObs); }
 
-        // On shared-link tabs: clear draw.io's localStorage draft keys before draw.io reads them
-        // so no auto-recovery dialog is offered.
+        // Auto-dismiss draft-selection dialog on shared-link tabs.
+        // draw.io shows a geDialog with "Select a draft to continue editing:" when IndexedDB
+        // has a stored draft. Clicking Edit would overwrite Tab A's content. We auto-click
+        // Cancel and re-apply _lastServerXml (Tab A's state) so Tab B shows the live diagram.
         if (_rtFromLink) {
-          try {
-            var _dk = [];
-            for (var _i = 0; _i < localStorage.length; _i++) {
-              var _k = localStorage.key(_i) || '';
-              if (/draft|backup|autosave|auto-save|recovery/i.test(_k)) _dk.push(_k);
-            }
-            _dk.forEach(function(k) { localStorage.removeItem(k); });
-          } catch(e) {}
+          var _draftObs = new MutationObserver(function(mutations) {
+            mutations.forEach(function(m) {
+              if (!m.addedNodes) return;
+              m.addedNodes.forEach(function(node) {
+                if (!node || node.nodeType !== 1) return;
+                setTimeout(function() {
+                  var dialogs = [];
+                  if (node.classList && node.classList.contains('geDialog')) {
+                    dialogs = [node];
+                  } else if (node.querySelectorAll) {
+                    dialogs = Array.from(node.querySelectorAll('.geDialog'));
+                  }
+                  dialogs.forEach(function(dlg) {
+                    var txt = (dlg.textContent || '').toLowerCase();
+                    if (!txt.includes('draft')) return;
+                    // First non-primary button is Cancel
+                    var cancelBtn = dlg.querySelector('button.geBtn:not(.gePrimaryBtn)') || dlg.querySelector('button.geBtn');
+                    if (cancelBtn) {
+                      console.log('[DrawIO RT] Auto-clicking Cancel on draft dialog');
+                      cancelBtn.click();
+                      setTimeout(_applyLastServerXml, 500);
+                    }
+                  });
+                }, 50);
+              });
+            });
+          });
+          function _startDraftObs() { _draftObs.observe(document.body, { childList: true }); }
+          if (document.body) { _startDraftObs(); } else { document.addEventListener('DOMContentLoaded', _startDraftObs); }
         }
+
       }
 
       // Share dialog: shown when user clicks the Invite button or when draw.io's
@@ -707,11 +884,18 @@ data:
         } catch(ex) {}
       });
 
-      // Returns true if msg text looks like the Google Drive collaboration requirement
+      // Returns true if arg text looks like the Google Drive collaboration requirement
       function _isGDriveMsg(txt) {
         if (!txt || _isEmbedMode) return false;
         var t = (typeof txt === 'string' ? txt : (txt.textContent || txt.innerHTML || '')).toLowerCase();
         return t.includes('google drive') && (t.includes('collaborat') || t.includes('before you can'));
+      }
+      // Returns true if arg text looks like an auto-recovery prompt (NOT draft-selection —
+      // the draft dialog must reach the DOM so _draftObs can auto-click Cancel and restore state).
+      function _isAutoRecovMsg(txt) {
+        if (!_rtFromLink || _isEmbedMode) return false;
+        var t = (typeof txt === 'string' ? txt : (txt && (txt.textContent || txt.innerHTML) || '')).toLowerCase();
+        return t.includes('recover') || (t.includes('auto') && (t.includes('save') || t.includes('restore')));
       }
 
       // Intercept native window.alert (draw.io may fall back to it in some builds)
@@ -741,16 +925,46 @@ data:
             var orig = cls.prototype[m];
             cls.prototype[m] = function() {
               if (_isGDriveMsg(arguments[0])) { _rtRestoreEditorState(); setTimeout(showShareDialog, 50); return; }
+              // Block auto-recovery dialog on shared-link tabs — skip 'confirm' which has
+              // mandatory ok/cancel callbacks that must fire to avoid jamming draw.io init.
+              if (m !== 'confirm' && _isAutoRecovMsg(arguments[0])) return;
               return orig.apply(this, arguments);
             };
           }
         });
+        // Reduce "Unsaved changes. Click here to save." to the small built-in indicator.
+        // setStatus only receives strings, so this patch is safe to return early.
+        if (!_isEmbedMode && typeof cls.prototype.setStatus === 'function' && !cls.prototype._rtSSPatched) {
+          cls.prototype._rtSSPatched = true;
+          var _origSS = cls.prototype.setStatus;
+          cls.prototype.setStatus = function(msg) {
+            if (typeof msg === 'string') {
+              var lc = msg.toLowerCase();
+              if (lc.includes('unsaved') || lc.includes('click here to save')) {
+                try { if (this.editor && typeof this.editor.setModified === 'function') this.editor.setModified(false); } catch(e) {}
+                return;
+              }
+            }
+            return _origSS.apply(this, arguments);
+          };
+        }
+        // On shared-link tabs (#rt= URL): suppress the auto-recovery notification bar.
+        // showNotification is non-blocking — returning early is safe (unlike confirm which has callbacks).
+        if (_rtFromLink && typeof cls.prototype.showNotification === 'function' && !cls.prototype._rtRecNotif) {
+          cls.prototype._rtRecNotif = true;
+          var _origNotif = cls.prototype.showNotification;
+          cls.prototype.showNotification = function() {
+            var msg = typeof arguments[0] === 'string' ? arguments[0].toLowerCase() : '';
+            if (msg.includes('recover') || (msg.includes('auto') && msg.includes('save'))) return;
+            return _origNotif.apply(this, arguments);
+          };
+        }
         return !!window.__drawioEditorUi;
       }
 
       // Patch mxWindow.prototype.show and mxUtils.alert once they are defined by app.min.js
       function patchMxGlobals() {
-        if (typeof mxUtils !== 'undefined' && !mxUtils._rtGdPatched) {
+        if (typeof mxUtils !== 'undefined' && mxUtils && !mxUtils._rtGdPatched) {
           mxUtils._rtGdPatched = true;
           ['alert','error'].forEach(function(m) {
             if (typeof mxUtils[m] === 'function') {
@@ -762,7 +976,7 @@ data:
             }
           });
         }
-        if (typeof mxWindow !== 'undefined' && !mxWindow._rtGdPatched) {
+        if (typeof mxWindow !== 'undefined' && mxWindow && !mxWindow._rtGdPatched) {
           mxWindow._rtGdPatched = true;
           var origShow = mxWindow.prototype.show;
           if (typeof origShow === 'function') {
@@ -771,6 +985,7 @@ data:
                 _rtRestoreEditorState(); setTimeout(showShareDialog, 50);
                 return;
               }
+              if (this.div && _isAutoRecovMsg(this.div)) return;
               return origShow.apply(this, arguments);
             };
           }
@@ -830,7 +1045,7 @@ data:
               // Find an open WebSocket — prefer room stored in localStorage
               let ws = null;
               try {
-                const roomId = localStorage.getItem('drawio-rt-roomId');
+                const roomId = sessionStorage.getItem('drawio-rt-roomId') || localStorage.getItem('drawio-rt-roomId');
                 if (roomId && rooms.has(roomId)) ws = rooms.get(roomId).ws;
               } catch(e) {}
               if (!ws || ws.readyState !== 1) {
@@ -851,6 +1066,19 @@ data:
           const edit = evt && evt.getProperty && evt.getProperty('edit');
           if (edit && edit.changes && edit.changes.length > 0) scheduleRelay();
         });
+
+        // Expose scheduleRelay so the sync-request WS handler can trigger it from Tab B's request
+        window._rtScheduleRelay = scheduleRelay;
+
+        if (_rtFromLink) {
+          // Tab B: apply _lastServerXml if it already arrived before the graph was ready.
+          // If it hasn't arrived yet, the WS message handler applies it directly once it comes in.
+          if (_lastServerXml) setTimeout(_applyLastServerXml, 200);
+        } else {
+          // Tab A: relay once now that the graph is confirmed ready.
+          // This is more reliable than the 800ms WS-open relay (which fires before draw.io inits).
+          setTimeout(scheduleRelay, 300);
+        }
 
         initPresence(graph);
         if (typeof window._rtHideSplash === 'function') window._rtHideSplash();

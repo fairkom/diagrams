@@ -180,6 +180,14 @@ function handleRequest(req, res) {
     return;
   }
 
+  // draw.io liveness check — must return 200 so draw.io sets cacheEnabled=true
+  // and uses server-side state instead of falling back to local auto-recovery drafts.
+  if (req.url === '/cache?alive' || req.url === '/cache/alive') {
+    res.writeHead(200);
+    res.end('OK');
+    return;
+  }
+
   // Statistics
   if (req.url === '/stats') {
     res.writeHead(200, { 'Content-Type': 'application/json' });

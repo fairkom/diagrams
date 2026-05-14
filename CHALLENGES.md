@@ -139,6 +139,121 @@ Once both tabs were open simultaneously before Tab A moved an object, the relay 
 
 ---
 
+---
+
+## Challenge 9: draw.io Prompts to Save to Google Drive (Plain Mode)
+
+When draw.io runs without a storage backend — a plain URL, not launched from Nextcloud — it detects that real-time collaboration is active and shows a modal: *"You'll need to save TestDiagram.drawio to Google Drive before you can collaborate."* This appears because draw.io's storage module checks for a configured file backend before enabling RT.
+
+**Multi-layer interception required:** The dialog appears through several different code paths depending on timing and draw.io version:
+
+1. **DOM MutationObserver (`_hideGDriveDialog`):** Scans `document.body.children` 200 ms after any mutation for nodes whose text contains `"google drive"` and `"collaborat"`. Hides the node and its glass backdrop.
+2. **EditorUi prototype interceptors (`showDialog`, `showError`, `handleError`, `alert`, `showGoogleDriveDialog`):** Block calls that pass a GDrive message, before they even create DOM. Required because `/cache?alive` returning 200 (liveness check) causes draw.io to set `cacheEnabled=true` at ~100 ms, triggering the dialog faster than the MutationObserver poll.
+3. **Native `window.alert` wrap:** Fallback for older draw.io builds.
+4. **Editor state restore:** After suppressing, call `graph.setEnabled(true)`, remove the glass backdrop via `ui.glass`, and show our own "Invite collaborators" modal instead.
+
+---
+
+## Challenge 10: Prototype Method Patches Overwritten by draw.io
+
+The poll loop (retrying every 500 ms) patches `EditorUi.prototype.showDialog` etc. once the class is found on `window`. But draw.io assigns the class first, then assigns all prototype methods individually afterwards. Our patch ran after the class was found but the prototype methods were reassigned by draw.io's own initialisation, silently overwriting the patches.
+
+**Solution — double-level property interception:**
+
+1. Intercept the `window.EditorUi` *assignment* via `Object.defineProperty` with a setter.
+2. When the class is assigned (step 1 fires), immediately install another `Object.defineProperty` getter/setter on each prototype method we want to wrap.
+3. Any subsequent `EditorUi.prototype.showDialog = fn` goes through our inner setter, which wraps `fn` before storing it — so every future call goes through our wrapper regardless of order.
+
+The `_rtW` flag on wrapped functions prevents double-wrapping when both the early interceptor and `patchEditorUi` attempt to wrap the same method.
+
+---
+
+## Challenge 11: Browser Storage Draft Dialog Overwrites the Shared Session
+
+When Tab B opens via a shared `#rt=ROOM_ID` URL, draw.io detects an IndexedDB draft from a previous session and shows *"Select a draft to continue editing:"* with Cancel / Discard / Edit buttons. If the user (or an automated action) clicks **Edit**, draw.io loads the (possibly stale or different) draft into the model. Tab B's model listener then relays this to the room, overwriting Tab A's live content for all participants.
+
+**Solution:**
+
+1. Set `_rtFromLink = true` when the URL hash contained `#rt=`.
+2. Add a `MutationObserver` (`_draftObs`) on `document.body` watching for added `.geDialog` elements whose `textContent` includes `"draft"`.
+3. When detected, programmatically click the first non-primary button (Cancel). This runs draw.io's own cancel handler, allowing `EditorUi.init` to complete normally.
+4. 500 ms after Cancel, call `_applyLastServerXml()` to restore the room's current state (received from the RT server on WS connect and cached in `_lastServerXml`).
+5. After applying, explicitly call `graph.setEnabled(true)` and restore pointer-events — draw.io disables the graph while any modal dialog is open and does not always re-enable it after a programmatic click.
+
+**Critical lesson:** We initially added `"draft"` to `_isAutoRecovMsg()` to suppress the dialog via the prototype interceptors. This blocked the dialog *before* draw.io's callback chain ran. draw.io internally awaits the dialog result (Cancel/Discard/Edit); blocking it left `EditorUi.init` stuck indefinitely — the graph was never initialised, RT broke entirely. The dialog **must reach the DOM** so draw.io's own cancel path executes; our interception must happen at the DOM level (`_draftObs`), not at the method call level.
+
+---
+
+## Challenge 12: Initial Diagram State Not Loaded on Joining Tab
+
+Tab B opens via shared link. The RT server immediately sends `room.lastXml` on WebSocket connect. But draw.io takes 2–4 seconds to initialise, so `graph` is `null` when the WS message arrives. The XML is stored in `_lastServerXml` but cannot be applied yet.
+
+**Two compounding sub-problems:**
+
+- Tab A's 800 ms WS-open relay (designed to populate `room.lastXml`) fires before draw.io's graph is ready → relay silently skipped → `room.lastXml` stays empty → Tab B gets nothing on connect.
+- Even when `_lastServerXml` is populated, `attachModelListener` may succeed before the relay arrives, missing the safety-net window.
+
+**Solution — three cooperative mechanisms:**
+
+1. **Tab A relays from `attachModelListener`** (when the graph is confirmed ready, ~2–4 s after page load) via a 300 ms `setTimeout(scheduleRelay)`, not from the 800 ms WS-open handler where the graph doesn't exist yet. This reliably populates `room.lastXml`.
+2. **Tab B sends `{type:"sync-request"}`** 300 ms after WS connect, asking any already-connected tab to relay its current state. This covers the case where Tab A initialised before Tab B connected.
+3. **Tab A handles sync-requests** via `window._rtScheduleRelay` (a reference to `scheduleRelay` exposed from `attachModelListener`). When received, it triggers an immediate relay.
+4. **Safety net in `attachModelListener`:** if `_rtFromLink && _lastServerXml`, apply `_lastServerXml` 200 ms after the model listener attaches. The WS message handler also applies directly if the graph is already ready when the relay arrives.
+
+The `scheduleRelay` cell-count guard (`mxCell` count ≤ 2) ensures an empty Tab B never relays its blank model back to the room.
+
+---
+
+## Challenge 13: New Browser Tabs Silently Joining Existing Rooms
+
+A fresh tab opening `https://drawio-dev.fairkom.net` (no share link) read `drawio-rt-plainRoom` from `localStorage` and joined the room that a previous tab had written there. Consequences:
+
+- Tab C appeared to be a separate session but showed Tab A's content and avatars.
+- Tab C could relay a stale IndexedDB draft back into Tab A's room, overwriting live content.
+
+**Root cause:** `localStorage` is shared across all tabs in the same browser profile.
+
+**Solution:** Switch room ID persistence from `localStorage` to `sessionStorage`. `sessionStorage` is isolated per tab — a page refresh in Tab A re-reads the same room ID (session survives refresh), but a new Tab C starts with empty storage and generates a fresh room.
+
+| Scenario | Before | After |
+|---|---|---|
+| Tab A refreshes | ✓ re-joins same room | ✓ re-joins same room |
+| New Tab C, same browser | ✗ reads Tab A's room | ✓ fresh room |
+| Tab B via `#rt=` share link | ✓ | ✓ (hash → sessionStorage) |
+| Incognito Tab | ✓ (storage isolated) | ✓ |
+
+`sendWS` and `scheduleRelay` read `sessionStorage.drawio-rt-roomId` first, falling back to `localStorage` so draw.io's own HTTP-cache room ID (set by the XHR interceptor) is still found if sessionStorage has nothing.
+
+---
+
+## Challenge 14: "Unsaved Changes" Status Indicator
+
+draw.io's dirty-flag machinery appends `<div class="geStatusAlert">Unsaved changes. Click here to save.</div>` inside the menu bar link whenever the model is modified without saving. In plain mode (no storage backend), this fires constantly.
+
+**Approach 1 — `setStatus` interceptor:** Blocked the text call but draw.io's dirty-flag path also manipulates the DOM element directly (via the `editor.modified` state machine), so the indicator appeared anyway.
+
+**Approach 2 — CSS injection (used):** A `<style id="_rtStatusCss">` is injected early:
+
+```css
+a.geStatus div.geStatusAlert {
+  font-size: 0;          /* hide text */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px; height: 20px;
+  background: none; border: none;
+  cursor: pointer;
+}
+a.geStatus div.geStatusAlert::before {
+  content: "💾";         /* floppy-disk emoji */
+  font-size: 16px;
+}
+```
+
+The verbose text is hidden; a 💾 emoji replaces it. The element remains interactive — draw.io's own click handler on `a.geStatus` still fires the save action.
+
+---
+
 ## Final Data Flow
 
 ```
