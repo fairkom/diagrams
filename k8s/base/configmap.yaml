@@ -356,7 +356,24 @@ data:
           }
         });
 
-        ws.addEventListener('open',  () => console.log('[DrawIO RT] WS open:', roomId));
+        ws.addEventListener('open', () => {
+          console.log('[DrawIO RT] WS open:', roomId);
+          // Relay current canvas after 800 ms so room.lastXml is populated for late joiners.
+          // Only sent if the canvas is non-empty (length > 200 filters blank default diagrams).
+          setTimeout(function() {
+            try {
+              if (typeof mxCodec === 'undefined' || typeof mxUtils === 'undefined') return;
+              var _g = (window.__drawioEditorUi && window.__drawioEditorUi.editor && window.__drawioEditorUi.editor.graph)
+                       || (window.graph && window.graph.model && window.graph);
+              if (!_g || !_g.model) return;
+              var xml = mxUtils.getXml(new mxCodec().encode(_g.model));
+              if (xml && xml.length > 200) {
+                ws.send(JSON.stringify({ type: 'xml', xml: xml }));
+                console.log('[DrawIO RT] Relayed initial state (' + xml.length + ' chars)');
+              }
+            } catch(e) {}
+          }, 800);
+        });
         ws.addEventListener('close', (e) => {
           console.warn('[DrawIO RT] WS closed:', roomId, e.code);
           rooms.delete(roomId);
@@ -420,17 +437,20 @@ data:
         if (e.data && e.data.type === 'roomId') autoSubscribeRoom(e.data.roomId);
       };
 
+      var _isEmbedMode = (window.top !== window.self);
+
       // ── Plain-mode collaboration (direct URL, not Nextcloud embed) ────────────
       // Room ID lives in the URL hash so collaborators can join by sharing a link.
       // The RT server already stores room.lastXml, so anyone opening the shared URL
       // instantly receives the current diagram on WebSocket connect — no Google Drive.
-      var _isEmbedMode = (window.top !== window.self);
       var _plainRoomId = null;
+      var _rtFromLink  = false; // true when this tab opened a shared #rt= URL
       if (!_isEmbedMode) {
         // Read room ID from hash (shared link) then immediately clear the hash so draw.io
         // does not interpret it as a file URL to load ("Error loading file").
         try { _plainRoomId = new URLSearchParams(window.location.hash.replace(/^#/, '?')).get('rt'); } catch(e) {}
         if (_plainRoomId) {
+          _rtFromLink = true;
           try { history.replaceState(null, '', loc.pathname + loc.search); } catch(e) {}
         } else {
           // Not a shared link — restore from localStorage (page refresh) or generate fresh
@@ -481,6 +501,19 @@ data:
         });
         function _startGDObs() { _gdObs.observe(document.body, { childList: true, subtree: true }); }
         if (document.body) { _startGDObs(); } else { document.addEventListener('DOMContentLoaded', _startGDObs); }
+
+        // On shared-link tabs: clear draw.io's localStorage draft keys before draw.io reads them
+        // so no auto-recovery dialog is offered.
+        if (_rtFromLink) {
+          try {
+            var _dk = [];
+            for (var _i = 0; _i < localStorage.length; _i++) {
+              var _k = localStorage.key(_i) || '';
+              if (/draft|backup|autosave|auto-save|recovery/i.test(_k)) _dk.push(_k);
+            }
+            _dk.forEach(function(k) { localStorage.removeItem(k); });
+          } catch(e) {}
+        }
       }
 
       // Share dialog: shown when user clicks the Invite button or when draw.io's
@@ -787,7 +820,13 @@ data:
             try {
               if (typeof mxCodec === 'undefined' || typeof mxUtils === 'undefined') return;
               const xml = mxUtils.getXml(new mxCodec().encode(graph.model));
-              if (!xml || xml.length < 10) return;
+              if (!xml) return;
+              // Skip relay if the canvas has no user-added cells (only the two default cells id=0 and id=1).
+              // Prevents a joining tab's blank initialisation from erasing another tab's content.
+              try {
+                var _dc = mxUtils.parseXml(xml);
+                if (_dc.getElementsByTagName('mxCell').length <= 2) return;
+              } catch(e) {}
               // Find an open WebSocket — prefer room stored in localStorage
               let ws = null;
               try {
@@ -812,6 +851,7 @@ data:
           const edit = evt && evt.getProperty && evt.getProperty('edit');
           if (edit && edit.changes && edit.changes.length > 0) scheduleRelay();
         });
+
         initPresence(graph);
         if (typeof window._rtHideSplash === 'function') window._rtHideSplash();
         console.log('[DrawIO RT] Ready');
