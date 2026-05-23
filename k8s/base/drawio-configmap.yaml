@@ -1150,24 +1150,38 @@ data:
         // The built-in Share button in draw.io v30 may call a GDrive flow we can't intercept;
         // injecting our own button is reliable regardless of upstream changes.
         if (!_isEmbedMode && !document.getElementById('_rtMenuShare')) {
-          (function _tryInjectMenuShare() {
-            // Try draw.io's own menubar reference first, fall back to DOM query with multiple selectors.
-            var ui = window.__drawioEditorUi;
-            var bar = (ui && ui.menubar && ui.menubar.container) ||
-                      document.querySelector('.geMenubar') ||
-                      document.querySelector('[class*="geMenu"]') ||
-                      document.querySelector('.mxMenubar');
-            if (!bar) { setTimeout(_tryInjectMenuShare, 300); return; }
-            var btn = document.createElement('a');
-            btn.id = '_rtMenuShare';
-            btn._rtOwned = true;
-            btn.className = 'geItem';
-            btn.style.cssText = 'cursor:pointer;padding:0 10px;color:#3b82f6;font-weight:600';
-            btn.textContent = '🔗 Share';
-            btn.addEventListener('click', function(e) { e.preventDefault(); e.stopPropagation(); showShareDialog(); });
-            bar.appendChild(btn);
-            console.log('[DrawIO RT] Share button injected into', bar.className || bar.tagName);
-          })();
+          var _ui2 = window.__drawioEditorUi;
+          console.log('[DrawIO RT] menubar probe — ui.menubar:', _ui2 && _ui2.menubar,
+            '.geMenubar:', document.querySelector('.geMenubar'),
+            '[class*=geMenu]:', document.querySelector('[class*="geMenu"]'));
+          // Try menubar.container first; if that also fails, use a fixed floating button.
+          var _bar = (_ui2 && _ui2.menubar && _ui2.menubar.container) ||
+                     document.querySelector('.geMenubar') ||
+                     document.querySelector('[class*="geMenu"]');
+          if (_bar) {
+            var _mBtn = document.createElement('a');
+            _mBtn.id = '_rtMenuShare';
+            _mBtn._rtOwned = true;
+            _mBtn.className = 'geItem';
+            _mBtn.style.cssText = 'cursor:pointer;padding:0 10px;color:#3b82f6;font-weight:600';
+            _mBtn.textContent = '🔗 Share';
+            _mBtn.addEventListener('click', function(e) { e.preventDefault(); e.stopPropagation(); showShareDialog(); });
+            _bar.appendChild(_mBtn);
+            console.log('[DrawIO RT] Share button injected into', _bar.className || _bar.tagName);
+          } else {
+            // Menubar not found — use a fixed-position button visible regardless of DOM layout.
+            var _fBtn = document.createElement('div');
+            _fBtn.id = '_rtMenuShare';
+            _fBtn._rtOwned = true;
+            _fBtn.style.cssText = 'position:fixed;top:6px;left:50%;transform:translateX(-50%);z-index:9999;' +
+              'background:#3b82f6;color:#fff;border-radius:6px;padding:4px 14px;' +
+              'font:600 12px/1.6 "Segoe UI",system-ui,sans-serif;cursor:pointer;' +
+              'box-shadow:0 2px 8px rgba(0,0,0,.25);user-select:none';
+            _fBtn.textContent = '🔗 Share diagram';
+            _fBtn.addEventListener('click', function() { showShareDialog(); });
+            document.body.appendChild(_fBtn);
+            console.log('[DrawIO RT] Share button injected as fixed fallback');
+          }
         }
 
         // Jitsi embed: inject a floating Share button so participants can copy the diagram link.
