@@ -641,6 +641,18 @@ data:
         }
         try { sessionStorage.setItem('drawio-rt-plainRoom', _plainRoomId); } catch(e) {}
         try { sessionStorage.setItem('drawio-rt-roomId',    _plainRoomId); } catch(e) {}
+        // Jitsi passes the Jitsi display name as userName= in the URL — use it directly
+        // so the guest name prompt is skipped and cursor presence shows the Jitsi identity.
+        if (_isJitsiEmbed) {
+          var _jitsiName = null;
+          try { _jitsiName = new URLSearchParams(window.location.hash.replace(/^#/, '?')).get('userName'); } catch(e) {}
+          if (!_jitsiName) { try { _jitsiName = new URLSearchParams(window.location.search).get('userName'); } catch(e) {} }
+          if (_jitsiName) {
+            _userName  = _jitsiName;
+            _nameReady = true;
+            try { localStorage.setItem('drawio-rt-guestName', _jitsiName); } catch(e) {}
+          }
+        }
         // Connect immediately so late-joiners receive room.lastXml the moment they open the link
         ensureWebSocket(_plainRoomId);
         // Intercept draw.io's "Connect to Google Drive to collaborate" dialog.
@@ -727,10 +739,11 @@ data:
       var _shareDialogOpen = false;
       var _shareLastClosed = 0;
       function showShareDialog() {
-        if (_shareDialogOpen || _isEmbedMode || !_plainRoomId) return;
+        if (_shareDialogOpen || (_isEmbedMode && !_isJitsiEmbed) || !_plainRoomId) return;
         if (Date.now() - _shareLastClosed < 5000) return;
         _shareDialogOpen = true;
-        var url = loc.protocol + '//' + loc.host + loc.pathname + '#rt=' + _plainRoomId;
+        // In Jitsi embed the browser URL may be /myroom1?etherpadParams — always share from root.
+        var url = loc.protocol + '//' + loc.host + (_isJitsiEmbed ? '/' : loc.pathname) + '#rt=' + _plainRoomId;
         var backdrop = document.createElement('div');
         backdrop._rtOwned = true;
         backdrop.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.42);z-index:2147483644;display:flex;align-items:center;justify-content:center';
@@ -953,6 +966,9 @@ data:
             cls.prototype['_rtGd' + m] = true;
             var orig = cls.prototype[m];
             cls.prototype[m] = function() {
+              // In Jitsi embed, showGoogleDriveDialog always redirects to our share dialog
+              // regardless of message text — draw.io's Share button may call it without GDrive text.
+              if (_isJitsiEmbed && m === 'showGoogleDriveDialog') { _rtRestoreEditorState(); setTimeout(showShareDialog, 50); return; }
               if (_isGDriveMsg(arguments[0])) { _rtRestoreEditorState(); setTimeout(showShareDialog, 50); return; }
               // Block auto-recovery dialog on shared-link tabs — skip 'confirm' which has
               // mandatory ok/cancel callbacks that must fire to avoid jamming draw.io init.
@@ -1107,6 +1123,21 @@ data:
           // Tab A: relay once now that the graph is confirmed ready.
           // This is more reliable than the 800ms WS-open relay (which fires before draw.io inits).
           setTimeout(scheduleRelay, 300);
+        }
+
+        // Jitsi embed: inject a floating Share button so participants can copy the diagram link.
+        // Draw.io's own Share/Google Drive button may be wired for GDrive and non-functional here.
+        if (_isJitsiEmbed && !document.getElementById('_rtJitsiShare')) {
+          var _sBtn = document.createElement('div');
+          _sBtn.id = '_rtJitsiShare';
+          _sBtn._rtOwned = true;
+          _sBtn.style.cssText = 'position:fixed;top:8px;right:8px;z-index:9999;' +
+            'background:#3b82f6;color:#fff;border-radius:6px;padding:5px 11px;' +
+            'font:600 12px/1.4 "Segoe UI",system-ui,sans-serif;cursor:pointer;' +
+            'box-shadow:0 2px 8px rgba(0,0,0,.25);user-select:none';
+          _sBtn.textContent = '🔗 Share';
+          _sBtn.addEventListener('click', function() { showShareDialog(); });
+          document.body.appendChild(_sBtn);
         }
 
         initPresence(graph);
