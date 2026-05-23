@@ -48,7 +48,7 @@ Nextcloud (test.faircloud.eu)
 ```
 drawio/
 ├── base/
-│   ├── configmap.yaml              # draw.io config + PreConfig.js (the RT shim)
+│   ├── drawio-configmap.yaml       # draw.io config + PreConfig.js (the RT shim)
 │   ├── deployment.yaml             # draw.io pod (injects PreConfig.js at startup)
 │   ├── realtime-server-deployment.yaml
 │   ├── realtime-server-service.yaml
@@ -87,22 +87,22 @@ Update the image tag in `base/realtime-server-deployment.yaml`.
 ### 2. Apply the manifests
 
 ```bash
-kubectl apply -f base/configmap.yaml
+kubectl apply -f base/drawio-configmap.yaml
 kubectl apply -k overlay/dev
 ```
 
 ### 3. Configuration
 
-Configurations and our custom logic live inside `base/configmap.yaml`. You need to adapt at least the realtimeUrl. After each edit do a:
+Configurations and our custom logic live inside `base/drawio-configmap.yaml`. You need to adapt at least the realtimeUrl. After each edit do a:
 
 ```bash
-kubectl apply -f base/configmap.yaml
+kubectl apply -f base/drawio-configmap.yaml
 kubectl rollout restart deployment/drawio
 ```
 
 The draw.io pod's startup command copies the ConfigMap-mounted file into Tomcat's webapp directory on every restart.
 
-The draw.io ConfigMap (`base/configmap.yaml`) contains:
+The draw.io ConfigMap (`base/drawio-configmap.yaml`) contains:
 
 - `drawio-config.json` — sets `realtimeUrl` and `pusherKey: "local-rt"`
 - `PreConfig.js` — the RT shim loaded before draw.io's `app.min.js`
@@ -130,6 +130,56 @@ In the admin panel (draw.io app settings), replace the default server URL:
 This server is for demonstration & dev purposes only and may break or timeout (low resource dev cluster).  Contact sales ät fairkom.eu if you want fairkom host that reliably for your production Nextcloud.
 
 Ensure the draw.io app is configured with `embedRT=1` to enable real-time mode. Do not activate offline mode but activate automatic saving. 
+
+## Jitsi Integration
+
+draw.io can be used as a shared whiteboard inside a Jitsi video call by configuring it as the Etherpad provider.
+
+### How it works
+
+Jitsi's Etherpad integration opens a shared note pad as an iframe panel for all participants. By pointing Jitsi at this draw.io instance instead of Etherpad, participants get a real-time collaborative diagram instead of a text pad.
+
+When someone opens the "Shared document" panel in Jitsi, Jitsi constructs a URL like:
+
+```
+https://drawio-dev.fairkom.net/myroom1?showControls=true&showChat=false&userName=Alice
+```
+
+The `PreConfig.js` shim detects the Etherpad-style query parameters (`showControls`, `showLineNumbers`, `useMonospaceFont`) and:
+
+1. Treats the path segment (`myroom1`) as the collaboration room ID.
+2. Extracts `userName=` from the URL and pre-fills the guest name — skipping the name popup.
+3. Enables RT collaboration even though draw.io runs inside an iframe.
+4. Adds a **🔗 Share** button inside the draw.io iframe so participants can copy the diagram link.
+
+All participants in the same Jitsi room see the same diagram and edits are synced in real time.
+
+### Jitsi configuration
+
+In your Jitsi `config.js` (or environment config), set:
+
+```js
+etherpad_base: 'https://drawio-dev.fairkom.net/#rt=',
+```
+
+Or via environment variable for `docker-jitsi-meet`:
+
+```bash
+ETHERPAD_PUBLIC_URL=https://drawio-dev.fairkom.net/#rt=
+```
+
+### Nginx rewrite (required)
+
+Jitsi appends the room name as a path segment (`/myroom1?showControls=true&...`). Tomcat cannot route sub-paths, so the nginx ingress must rewrite these internally to `/` while keeping the browser URL intact. This is already applied in `overlay/dev/patch-ingress.yaml`:
+
+```yaml
+nginx.ingress.kubernetes.io/configuration-snippet: |
+  if ($args ~* "showControls=true") {
+    rewrite ^/\w+$ / break;
+  }
+```
+
+Apply this annotation to whichever overlay you deploy for Jitsi.
 
 ## API Endpoints (realtime-server)
 
