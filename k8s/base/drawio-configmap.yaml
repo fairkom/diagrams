@@ -650,7 +650,6 @@ data:
           if (_jitsiName) {
             _userName  = _jitsiName;
             _nameReady = true;
-            try { localStorage.setItem('drawio-rt-guestName', _jitsiName); } catch(e) {}
           }
         }
         // Connect immediately so late-joiners receive room.lastXml the moment they open the link
@@ -1206,7 +1205,7 @@ data:
         // Anonymous / external-link users get a name prompt after 1.5 s (to let NC postMessages arrive).
         if (_ncUserId) {
           _nameReady = true;
-        } else {
+        } else if (!_nameReady) {
           var _saved = null;
           try { _saved = localStorage.getItem('drawio-rt-guestName'); } catch(e) {}
           if (_saved) {
