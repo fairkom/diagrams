@@ -11,6 +11,14 @@ metadata:
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
     # optional: disable if no TLS for dev
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    # Jitsi Etherpad integration: Jitsi appends the conference room name as a path segment,
+    # producing /myroom1?showControls=true&... — Tomcat cannot route sub-paths, so nginx
+    # rewrites internally to / so draw.io serves index.html. The browser URL is unchanged,
+    # so PreConfig.js reads /myroom1 from window.location.pathname and extracts the room name.
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      if ($args ~* "showControls=true") {
+        rewrite ^/\w+$ / break;
+      }
 spec:
   tls:
     - hosts:

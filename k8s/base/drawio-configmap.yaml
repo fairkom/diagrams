@@ -507,6 +507,17 @@ data:
       };
 
       var _isEmbedMode = (window.top !== window.self);
+      // Detect Jitsi Etherpad-style embed: draw.io opened in a Jitsi iframe via the
+      // ETHERPAD_PUBLIC_URL config.  Jitsi appends the conference room name and Etherpad
+      // query params (?showControls=true&showChat=false&showLineNumbers=true&useMonospaceFont=false&userName=...).
+      // Two URL shapes are possible depending on Jitsi version:
+      //   hash-based:  /#rt=myroom1?showControls=true&...   (string-concat of base + room + params)
+      //   path-based:  /myroom1?showControls=true&...       (URL-API construction; nginx rewrites to /)
+      // Both produce _isEmbedMode=true; the Etherpad params are the discriminator.
+      var _isJitsiEmbed = _isEmbedMode && (
+        /showControls|showLineNumbers|useMonospaceFont/.test(window.location.search) ||
+        /showControls|showLineNumbers|useMonospaceFont/.test(window.location.hash)
+      );
 
       // Double-level interception for auto-recovery suppression on shared-link tabs.
       //
@@ -594,21 +605,39 @@ data:
       // The RT server already stores room.lastXml, so anyone opening the shared URL
       // instantly receives the current diagram on WebSocket connect — no Google Drive.
       var _plainRoomId = null;
-      var _rtFromLink  = false; // true when this tab opened a shared #rt= URL
-      if (!_isEmbedMode) {
-        // Read room ID from hash (shared link) then immediately clear the hash so draw.io
-        // does not interpret it as a file URL to load ("Error loading file").
-        try { _plainRoomId = new URLSearchParams(window.location.hash.replace(/^#/, '?')).get('rt'); } catch(e) {}
+      var _rtFromLink  = false; // true when this tab opened a shared #rt= URL or is a Jitsi embed
+      if (!_isEmbedMode || _isJitsiEmbed) {
+        // ── Room ID extraction ────────────────────────────────────────────────────
+        // Case 1: hash-based shared link or Jitsi #rt= config
+        //   URL shape: /#rt=myroom1  or  /#rt=myroom1?showControls=true&...
+        //   Jitsi may append Etherpad params inside the fragment (?showControls=...).
+        //   URLSearchParams stops at & not at ?, so split on ? to strip the trailer.
+        try {
+          var _rtRaw = new URLSearchParams(window.location.hash.replace(/^#/, '?')).get('rt');
+          if (_rtRaw) _plainRoomId = _rtRaw.split('?')[0];
+        } catch(e) {}
+        // Case 2: Jitsi path-based config — /myroom1?showControls=true&...
+        //   nginx rewrites to / internally so draw.io loads; browser still shows /myroom1.
+        if (!_plainRoomId && _isJitsiEmbed) {
+          var _seg = window.location.pathname.replace(/^\/+|\/+$/g, '').split('/')[0];
+          if (_seg) _plainRoomId = _seg.toLowerCase().replace(/[^a-z0-9_.-]/g, '').slice(0, 50);
+        }
         if (_plainRoomId) {
           _rtFromLink = true;
-          try { history.replaceState(null, '', loc.pathname + loc.search); } catch(e) {}
-        } else {
+          if (!_isJitsiEmbed) {
+            // Clear hash only for standard shared-link tabs; leave Jitsi iframe URL intact.
+            try { history.replaceState(null, '', loc.pathname + loc.search); } catch(e) {}
+          }
+        } else if (!_isJitsiEmbed) {
           // Not a shared link — restore from sessionStorage (page refresh in same tab) or generate fresh.
           // sessionStorage is isolated per tab so a new tab always starts its own room,
           // while a refresh re-joins the same room. localStorage was used here before but
           // caused every new tab in the same browser to silently join an existing room.
           try { _plainRoomId = sessionStorage.getItem('drawio-rt-plainRoom'); } catch(e) {}
           if (!_plainRoomId) _plainRoomId = 'r' + Math.random().toString(36).slice(2, 10);
+        } else {
+          // Jitsi embed but no room name found in URL — unexpected fallback.
+          _plainRoomId = 'j' + Math.random().toString(36).slice(2, 10);
         }
         try { sessionStorage.setItem('drawio-rt-plainRoom', _plainRoomId); } catch(e) {}
         try { sessionStorage.setItem('drawio-rt-roomId',    _plainRoomId); } catch(e) {}
@@ -886,14 +915,14 @@ data:
 
       // Returns true if arg text looks like the Google Drive collaboration requirement
       function _isGDriveMsg(txt) {
-        if (!txt || _isEmbedMode) return false;
+        if (!txt || (_isEmbedMode && !_isJitsiEmbed)) return false;
         var t = (typeof txt === 'string' ? txt : (txt.textContent || txt.innerHTML || '')).toLowerCase();
         return t.includes('google drive') && (t.includes('collaborat') || t.includes('before you can'));
       }
       // Returns true if arg text looks like an auto-recovery prompt (NOT draft-selection —
       // the draft dialog must reach the DOM so _draftObs can auto-click Cancel and restore state).
       function _isAutoRecovMsg(txt) {
-        if (!_rtFromLink || _isEmbedMode) return false;
+        if (!_rtFromLink || (_isEmbedMode && !_isJitsiEmbed)) return false;
         var t = (typeof txt === 'string' ? txt : (txt && (txt.textContent || txt.innerHTML) || '')).toLowerCase();
         return t.includes('recover') || (t.includes('auto') && (t.includes('save') || t.includes('restore')));
       }
