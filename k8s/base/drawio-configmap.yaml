@@ -1151,7 +1151,12 @@ data:
         // injecting our own button is reliable regardless of upstream changes.
         if (!_isEmbedMode && !document.getElementById('_rtMenuShare')) {
           (function _tryInjectMenuShare() {
-            var bar = document.querySelector('.geMenubar');
+            // Try draw.io's own menubar reference first, fall back to DOM query with multiple selectors.
+            var ui = window.__drawioEditorUi;
+            var bar = (ui && ui.menubar && ui.menubar.container) ||
+                      document.querySelector('.geMenubar') ||
+                      document.querySelector('[class*="geMenu"]') ||
+                      document.querySelector('.mxMenubar');
             if (!bar) { setTimeout(_tryInjectMenuShare, 300); return; }
             var btn = document.createElement('a');
             btn.id = '_rtMenuShare';
@@ -1161,6 +1166,7 @@ data:
             btn.textContent = '🔗 Share';
             btn.addEventListener('click', function(e) { e.preventDefault(); e.stopPropagation(); showShareDialog(); });
             bar.appendChild(btn);
+            console.log('[DrawIO RT] Share button injected into', bar.className || bar.tagName);
           })();
         }
 
