@@ -1185,18 +1185,20 @@ data:
         }
 
         // Jitsi embed: inject a floating Share button so participants can copy the diagram link.
-        // Draw.io's own Share/Google Drive button may be wired for GDrive and non-functional here.
+        console.log('[DrawIO RT] jitsi button check — _isJitsiEmbed:', _isJitsiEmbed, 'existing:', !!document.getElementById('_rtJitsiShare'));
         if (_isJitsiEmbed && !document.getElementById('_rtJitsiShare')) {
           var _sBtn = document.createElement('div');
           _sBtn.id = '_rtJitsiShare';
           _sBtn._rtOwned = true;
-          _sBtn.style.cssText = 'position:fixed;top:8px;right:8px;z-index:9999;' +
-            'background:#3b82f6;color:#fff;border-radius:6px;padding:5px 11px;' +
-            'font:600 12px/1.4 "Segoe UI",system-ui,sans-serif;cursor:pointer;' +
-            'box-shadow:0 2px 8px rgba(0,0,0,.25);user-select:none';
+          // bottom-left avoids overlap with draw.io toolbar; position:fixed is iframe-relative.
+          _sBtn.style.cssText = 'position:fixed;bottom:16px;left:16px;z-index:2147483640;' +
+            'background:#3b82f6;color:#fff;border-radius:6px;padding:6px 14px;' +
+            'font:600 13px/1.4 "Segoe UI",system-ui,sans-serif;cursor:pointer;' +
+            'box-shadow:0 2px 8px rgba(0,0,0,.35);user-select:none';
           _sBtn.textContent = '🔗 Share';
           _sBtn.addEventListener('click', function() { showShareDialog(); });
           document.body.appendChild(_sBtn);
+          console.log('[DrawIO RT] Jitsi Share button appended to body');
         }
 
         initPresence(graph);
