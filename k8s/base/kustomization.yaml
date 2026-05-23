@@ -6,13 +6,13 @@ resources:
   - deployment.yaml
   - service.yaml
   - ingress.yaml
-  - configmap.yaml
+  - drawio-configmap.yaml
   - realtime-server-deployment.yaml
   - realtime-server-service.yaml
 
 images:
   - name: jgraph/drawio
-    newTag: latest
+    newTag: "30.0.2"
 
 labels:
   - pairs:
