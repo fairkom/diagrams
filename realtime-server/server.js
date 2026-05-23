@@ -126,7 +126,6 @@ function handleWebSocket(ws, req) {
   ws.on('message', (data) => {
     try {
       const dataStr = typeof data === 'string' ? data : data.toString();
-      console.log(`[${new Date().toISOString()}] [${ws.clientId}] [WS-MSG-IN] ${dataStr.length} bytes: ${dataStr.slice(0, 120)}`);
 
       // Cache plain XML relays so late-joining clients get the latest diagram state
       try {
@@ -134,12 +133,14 @@ function handleWebSocket(ws, req) {
         if (parsed && parsed.type === 'xml' && typeof parsed.xml === 'string') {
           room.lastXml = parsed.xml;
           console.log(`[${new Date().toISOString()}] [${ws.clientId}] [WS-XML] Cached plain XML (${parsed.xml.length} chars) for room ${roomId}`);
+        } else if (parsed && parsed.type !== 'cursor') {
+          // Log non-cursor, non-xml messages (sync-request etc.) for diagnostics
+          console.log(`[${new Date().toISOString()}] [${ws.clientId}] [WS-MSG] type=${parsed.type}`);
         }
       } catch (_) {}
 
       // Broadcast to other clients
       room.broadcast(dataStr, ws);
-      console.log(`[${new Date().toISOString()}] [${ws.clientId}] [WS-MSG-OUT] Broadcasted to ${room.clients.size - 1} other clients`);
     } catch (error) {
       console.error(`[${new Date().toISOString()}] [${ws.clientId}] [WS-MSG-ERROR] Error handling message:`, error.message);
       console.error(`[${new Date().toISOString()}] [${ws.clientId}] [WS-MSG-ERROR] Stack:`, error.stack);

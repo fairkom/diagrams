@@ -739,7 +739,6 @@ data:
       var _shareDialogOpen = false;
       var _shareLastClosed = 0;
       function showShareDialog() {
-        console.log('[DrawIO RT] showShareDialog called — embed:', _isEmbedMode, 'jitsi:', _isJitsiEmbed, 'room:', _plainRoomId, 'open:', _shareDialogOpen, 'cooldown:', Date.now() - _shareLastClosed);
         if (_shareDialogOpen || (_isEmbedMode && !_isJitsiEmbed) || !_plainRoomId) return;
         if (Date.now() - _shareLastClosed < 5000) return;
         _shareDialogOpen = true;
@@ -967,9 +966,6 @@ data:
             cls.prototype['_rtGd' + m] = true;
             var orig = cls.prototype[m];
             cls.prototype[m] = function() {
-              var _arg0 = arguments[0];
-              var _txt = typeof _arg0 === 'string' ? _arg0.slice(0,80) : (_arg0 && (_arg0.textContent||_arg0.innerHTML||'').slice(0,80));
-              console.log('[DrawIO RT] EditorUi.' + m + ' called, arg0 snippet:', _txt);
               // In Jitsi embed, showGoogleDriveDialog always redirects to our share dialog
               // regardless of message text — draw.io's Share button may call it without GDrive text.
               if (_isJitsiEmbed && m === 'showGoogleDriveDialog') { _rtRestoreEditorState(); setTimeout(showShareDialog, 50); return; }
@@ -1154,10 +1150,6 @@ data:
         // injecting our own button is reliable regardless of upstream changes.
         if (!_isEmbedMode && !document.getElementById('_rtMenuShare')) {
           var _ui2 = window.__drawioEditorUi;
-          console.log('[DrawIO RT] menubar probe — ui.menubar:', _ui2 && _ui2.menubar,
-            '.geMenubar:', document.querySelector('.geMenubar'),
-            '[class*=geMenu]:', document.querySelector('[class*="geMenu"]'));
-          // Try menubar.container first; if that also fails, use a fixed floating button.
           var _bar = (_ui2 && _ui2.menubar && _ui2.menubar.container) ||
                      document.querySelector('.geMenubar') ||
                      document.querySelector('[class*="geMenu"]');
@@ -1170,9 +1162,7 @@ data:
             _mBtn.textContent = '🔗 Share';
             _mBtn.addEventListener('click', function(e) { e.preventDefault(); e.stopPropagation(); showShareDialog(); });
             _bar.appendChild(_mBtn);
-            console.log('[DrawIO RT] Share button injected into', _bar.className || _bar.tagName);
           } else {
-            // Menubar not found — use a fixed-position button visible regardless of DOM layout.
             var _fBtn = document.createElement('div');
             _fBtn.id = '_rtMenuShare';
             _fBtn._rtOwned = true;
@@ -1183,17 +1173,14 @@ data:
             _fBtn.textContent = '🔗 Share diagram';
             _fBtn.addEventListener('click', function() { showShareDialog(); });
             document.body.appendChild(_fBtn);
-            console.log('[DrawIO RT] Share button injected as fixed fallback');
           }
         }
 
-        // Jitsi embed: inject a floating Share button so participants can copy the diagram link.
-        console.log('[DrawIO RT] jitsi button check — _isJitsiEmbed:', _isJitsiEmbed, 'existing:', !!document.getElementById('_rtJitsiShare'));
+        // Jitsi embed: floating Share button in bottom-left of the draw.io iframe.
         if (_isJitsiEmbed && !document.getElementById('_rtJitsiShare')) {
           var _sBtn = document.createElement('div');
           _sBtn.id = '_rtJitsiShare';
           _sBtn._rtOwned = true;
-          // bottom-left avoids overlap with draw.io toolbar; position:fixed is iframe-relative.
           _sBtn.style.cssText = 'position:fixed;bottom:16px;left:16px;z-index:2147483640;' +
             'background:#3b82f6;color:#fff;border-radius:6px;padding:6px 14px;' +
             'font:600 13px/1.4 "Segoe UI",system-ui,sans-serif;cursor:pointer;' +
@@ -1201,7 +1188,6 @@ data:
           _sBtn.textContent = '🔗 Share';
           _sBtn.addEventListener('click', function() { showShareDialog(); });
           document.body.appendChild(_sBtn);
-          console.log('[DrawIO RT] Jitsi Share button appended to body');
         }
 
         initPresence(graph);
