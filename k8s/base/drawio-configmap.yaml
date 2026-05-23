@@ -967,6 +967,9 @@ data:
             cls.prototype['_rtGd' + m] = true;
             var orig = cls.prototype[m];
             cls.prototype[m] = function() {
+              var _arg0 = arguments[0];
+              var _txt = typeof _arg0 === 'string' ? _arg0.slice(0,80) : (_arg0 && (_arg0.textContent||_arg0.innerHTML||'').slice(0,80));
+              console.log('[DrawIO RT] EditorUi.' + m + ' called, arg0 snippet:', _txt);
               // In Jitsi embed, showGoogleDriveDialog always redirects to our share dialog
               // regardless of message text — draw.io's Share button may call it without GDrive text.
               if (_isJitsiEmbed && m === 'showGoogleDriveDialog') { _rtRestoreEditorState(); setTimeout(showShareDialog, 50); return; }
