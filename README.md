@@ -125,7 +125,7 @@ In the admin panel (draw.io app settings), replace the default server URL:
 
 - Default: `https://embed.diagrams.net`
 - Self-hosted: `https://drawio-dev.fairkom.net` 
-- Demo diagram: `https://test.faircloud.eu/s/fXJTg6iM6BsWWxz`
+- Demo diagram: `https://test.faircloud.eu/s/j6s89ZNpf2es7LX`
 
 This server is for demonstration & dev purposes only and may break or timeout (low resource dev cluster).  Contact sales ät fairkom.eu if you want fairkom host that reliably for your production Nextcloud.
 
@@ -153,6 +153,8 @@ The `PreConfig.js` shim detects the Etherpad-style query parameters (`showContro
 4. Adds a **🔗 Share** button inside the draw.io iframe so participants can copy the diagram link.
 
 All participants in the same Jitsi room see the same diagram and edits are synced in real time.
+
+Known issue: When a user opens a shared document, this action is not triggered to other users as it does with the whiteboard. Any user needs to choose that menu item, unless the moderator activates the moderation option “Follow me”.
 
 ### Jitsi configuration
 
