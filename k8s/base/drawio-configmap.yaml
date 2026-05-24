@@ -1189,6 +1189,17 @@ data:
           document.body.appendChild(_sBtn);
         }
 
+        // Auto-fullscreen in Jitsi mode: click the Fullscreen button once the toolbar renders.
+        if (_isJitsiEmbed && !window._rtFullscreenDone) {
+          window._rtFullscreenDone = true;
+          var _fsAttempts = 0;
+          var _fsTimer = setInterval(function() {
+            var btn = document.querySelector('a.geButton[title="Fullscreen"]');
+            if (btn) { btn.click(); clearInterval(_fsTimer); }
+            else if (++_fsAttempts > 20) { clearInterval(_fsTimer); }
+          }, 200);
+        }
+
         initPresence(graph);
         if (typeof window._rtHideSplash === 'function') window._rtHideSplash();
         console.log('[DrawIO RT] Ready');
