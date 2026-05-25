@@ -350,6 +350,7 @@ data:
 
           // Primary path: plain XML relay from another tab
           if (raw.type === 'xml' && raw.xml && !_applyingRemote) {
+            window._rtGotXmlFromServer = true; // room has content — suppress Jitsi template offer
             _lastServerXml = raw.xml; // cache for re-application after draft-dialog dismiss
             var _g = (window.__drawioEditorUi && window.__drawioEditorUi.editor && window.__drawioEditorUi.editor.graph)
                      || (window.graph && window.graph.model && window.graph);
@@ -1144,49 +1145,34 @@ data:
           });
         })();
 
-        // Plain-mode: inject a "🔗 Share" button into draw.io's menubar.
-        // The built-in Share button in draw.io v30 may call a GDrive flow we can't intercept;
-        // injecting our own button is reliable regardless of upstream changes.
-        if (!_isEmbedMode && !document.getElementById('_rtMenuShare')) {
-          var _ui2 = window.__drawioEditorUi;
-          var _bar = (_ui2 && _ui2.menubar && _ui2.menubar.container) ||
-                     document.querySelector('.geMenubar') ||
-                     document.querySelector('[class*="geMenu"]');
-          if (_bar) {
-            var _mBtn = document.createElement('a');
-            _mBtn.id = '_rtMenuShare';
-            _mBtn._rtOwned = true;
-            _mBtn.className = 'geItem';
-            _mBtn.style.cssText = 'cursor:pointer;padding:0 10px;color:#3b82f6;font-weight:600';
-            _mBtn.textContent = '🔗 Share';
-            _mBtn.addEventListener('click', function(e) { e.preventDefault(); e.stopPropagation(); showShareDialog(); });
-            _bar.appendChild(_mBtn);
-          } else {
-            var _fBtn = document.createElement('div');
-            _fBtn.id = '_rtMenuShare';
-            _fBtn._rtOwned = true;
-            _fBtn.style.cssText = 'position:fixed;top:6px;left:50%;transform:translateX(-50%);z-index:9999;' +
-              'background:#3b82f6;color:#fff;border-radius:6px;padding:4px 14px;' +
-              'font:600 12px/1.6 "Segoe UI",system-ui,sans-serif;cursor:pointer;' +
-              'box-shadow:0 2px 8px rgba(0,0,0,.25);user-select:none';
-            _fBtn.textContent = '🔗 Share diagram';
-            _fBtn.addEventListener('click', function() { showShareDialog(); });
-            document.body.appendChild(_fBtn);
+        // Insert 🔗 immediately after the existing a.geStatus element (which already shows
+        // the 💾 disc via CSS ::before). This keeps the two icons together in all modes
+        // without adding a duplicate disc. Skipped in Nextcloud embed (NC handles sharing).
+        if ((!_isEmbedMode || _isJitsiEmbed) && !document.getElementById('_rtBarIcons')) {
+          var _statusEl = document.querySelector('a.geStatus');
+          if (_statusEl && _statusEl.parentNode) {
+            var _linkIco = document.createElement('a');
+            _linkIco.id = '_rtBarIcons';
+            _linkIco.title = 'Share diagram link';
+            _linkIco.style.cssText = 'cursor:pointer;font-size:15px;padding:0 2px;opacity:0.8;' +
+              'display:inline-flex;align-items:center;vertical-align:middle;text-decoration:none';
+            _linkIco.textContent = '🔗';
+            _linkIco.addEventListener('click', function(e) { e.preventDefault(); e.stopPropagation(); showShareDialog(); });
+            _statusEl.parentNode.insertBefore(_linkIco, _statusEl.nextSibling);
           }
         }
 
-        // Jitsi embed: floating Share button in bottom-left of the draw.io iframe.
-        if (_isJitsiEmbed && !document.getElementById('_rtJitsiShare')) {
-          var _sBtn = document.createElement('div');
-          _sBtn.id = '_rtJitsiShare';
-          _sBtn._rtOwned = true;
-          _sBtn.style.cssText = 'position:fixed;bottom:16px;left:16px;z-index:2147483640;' +
-            'background:#3b82f6;color:#fff;border-radius:6px;padding:6px 14px;' +
-            'font:600 13px/1.4 "Segoe UI",system-ui,sans-serif;cursor:pointer;' +
-            'box-shadow:0 2px 8px rgba(0,0,0,.35);user-select:none';
-          _sBtn.textContent = '🔗 Share';
-          _sBtn.addEventListener('click', function() { showShareDialog(); });
-          document.body.appendChild(_sBtn);
+        // Jitsi: offer template picker when the room is new (no XML received from server within 3 s).
+        if (_isJitsiEmbed && !window._rtTemplateOffered) {
+          window._rtTemplateOffered = true;
+          setTimeout(function() {
+            if (window._rtGotXmlFromServer) return;
+            try {
+              var ui = window.__drawioEditorUi;
+              var a = ui && ui.actions && ui.actions.get('new');
+              if (a) a.funct();
+            } catch(e) {}
+          }, 3000);
         }
 
         // Auto-fullscreen in Jitsi mode: click the Fullscreen button once the toolbar renders.
