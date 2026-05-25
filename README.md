@@ -1,12 +1,12 @@
-# draw.io for Kubernetes + Nextcloud
+# draw.io real-time server Nextcloud + Jitsi
 
-A self-hosted [draw.io](https://www.diagrams.net) deployment for Kubernetes, with GDPR-compliant real-time collaborative editing designed for use inside Nextcloud.
+A self-hosted [draw.io](https://www.diagrams.net) deployment for Kubernetes, with GDPR-compliant real-time collaborative editing designed for use inside Nextcloud or Jitsi but also stand-alone.
 
 ## Overview
 
 draw.io is deployed as the `jgraph/drawio` container behind Tomcat. A companion Node.js service handles real-time collaboration, replacing draw.io's default dependency on Pusher.com (a US cloud service) with a self-hosted WebSocket server.
 
-The integration is designed for the Nextcloud draw.io app, where draw.io runs inside an iframe embedded in Nextcloud (`embedRT=1` mode).
+The integration is also designed for the Nextcloud draw.io app, where draw.io runs inside an iframe embedded in Nextcloud (`embedRT=1` mode) and for Jitsi.
 
 ## Features
 
@@ -14,8 +14,8 @@ The integration is designed for the Nextcloud draw.io app, where draw.io runs in
 - Support for flowcharts, UML, entity relationships, and more
 - **Real-time collaborative editing** with separate rt server
 - Export to multiple formats (PNG, SVG, PDF, etc.)
-- Show Nextcloud avatars moving around from all collaborators
-- Requests display name from anonymous external users
+- When opened from Nextcloud show avatars moving around from all collaborators, else show names
+- Requests display name from anonymous external users or fetch from Jitsi session
 - Self-hosted and privacy-focused
 
 
@@ -76,6 +76,8 @@ drawio/
 
 ### 1. Build and push the real-time server image
 
+We push to fairkom's public registry.
+
 ```bash
 cd realtime-server
 docker build -t registry.osalliance.com/drawio/drawio-realtime:vX.X.X .
@@ -127,8 +129,6 @@ In the admin panel (draw.io app settings), replace the default server URL:
 - Self-hosted: `https://drawio-dev.fairkom.net` 
 - Demo diagram: `https://test.faircloud.eu/s/j6s89ZNpf2es7LX`
 
-This server is for demonstration & dev purposes only and may break or timeout (low resource dev cluster).  Contact sales ät fairkom.eu if you want fairkom host that reliably for your production Nextcloud.
-
 Ensure the draw.io app is configured with `embedRT=1` to enable real-time mode. Do not activate offline mode but activate automatic saving. 
 
 ## Jitsi Integration
@@ -167,7 +167,7 @@ etherpad_base: 'https://drawio-dev.fairkom.net/#rt=',
 Or via environment variable for `docker-jitsi-meet`:
 
 ```bash
-ETHERPAD_PUBLIC_URL=https://drawio-dev.fairkom.net/#rt=
+ETHERPAD_PUBLIC_URL='https://drawio-dev.fairkom.net/#rt='
 ```
 
 ### Nginx rewrite (required)
@@ -193,6 +193,11 @@ Apply this annotation to whichever overlay you deploy for Jitsi.
 | `/health` | GET | Liveness/readiness probe |
 | `/stats` | GET | JSON: room count, connected clients, uptime |
 
+## Hosting
+
+The above mentioned servers are for demonstration & dev purposes only and may break or timeout (low resource dev cluster).  
+
+Contact sales ät fairkom.eu if you want fairkom host that reliably for your production Nextcloud or Jitsi instance or as a  stand-alone GDRP compliant drawio service with your own domain.
 
 ## Troubleshooting
 
