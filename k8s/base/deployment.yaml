@@ -69,7 +69,16 @@ spec:
                 echo "⚠️  index.html not found at $WEBAPP_DIR/index.html"
               fi
 
-              echo "=== Step 4: Start Tomcat ==="
+              echo "=== Step 4: Inject Cache-Control headers via Tomcat ExpiresFilter ==="
+              WEB_XML=$WEBAPP_DIR/WEB-INF/web.xml
+              if [ -f "$WEB_XML" ] && ! grep -q 'ExpiresFilter' "$WEB_XML"; then
+                sed -i 's|</web-app>|<filter><filter-name>ExpiresFilter</filter-name><filter-class>org.apache.catalina.filters.ExpiresFilter</filter-class><init-param><param-name>ExpiresDefault</param-name><param-value>access plus 1 day</param-value></init-param></filter><filter-mapping><filter-name>ExpiresFilter</filter-name><url-pattern>*.js</url-pattern></filter-mapping><filter-mapping><filter-name>ExpiresFilter</filter-name><url-pattern>*.css</url-pattern></filter-mapping><filter-mapping><filter-name>ExpiresFilter</filter-name><url-pattern>*.png</url-pattern></filter-mapping></web-app>|' "$WEB_XML"
+                echo "✅ ExpiresFilter injected into web.xml"
+              else
+                echo "✅ ExpiresFilter already present or web.xml not found"
+              fi
+
+              echo "=== Step 5: Start Tomcat ==="
               exec $CATALINA_HOME/bin/catalina.sh run
           volumeMounts:
             - name: drawio-config-volume
